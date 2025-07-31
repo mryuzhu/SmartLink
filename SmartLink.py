@@ -1,7 +1,17 @@
-import json, os, sys, subprocess, urllib.parse
-import threading
+import sys
+
+def safe_print(*args, **kwargs):
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        msg = " ".join(str(a) for a in args)
+        print(msg.encode('gbk', errors='replace').decode('gbk'), **kwargs)
+
+import argparse
+import json, os, subprocess, urllib.parse
+import threading  # 已有，无需重复导入
 import serial  # 需 pip install pyserial
-import time
+import time       # 已有，无需重复导入
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QTextEdit, QMessageBox, QComboBox,
@@ -128,7 +138,7 @@ class SettingsDialog(QDialog):
     """
     设置对话框：可设置首选音乐平台、ADB设备IP、巴法云UID和Topic
     """
-    def __init__(self, parent=None, default_platform="酷狗音乐", default_ip="", default_serial="COM3", default_uid="", default_topic="", default_enable_card=True, default_enable_adb=True):
+    def __init__(self, parent=None, default_platform="酷狗音乐", default_ip="", default_serial="COM3", default_uid="", default_topic="", default_enable_card=True, default_enable_adb=True, default_music_screen_on=True, default_adb_screen_on=True, default_unlock_after_screen_on=False, default_device_password=""):
         super().__init__(parent)
         self.setWindowTitle("设置")
         self.resize(320, 240)
@@ -175,6 +185,27 @@ class SettingsDialog(QDialog):
         self.enable_adb_connect.setChecked(default_enable_adb if default_enable_adb is not None else True)
         layout.addWidget(self.enable_adb_connect)
 
+        # 新增：音乐和ADB前亮屏选项
+        self.music_screen_on = QCheckBox("播放音乐前亮屏")
+        self.music_screen_on.setChecked(default_music_screen_on)
+        layout.addWidget(self.music_screen_on)
+
+        self.adb_screen_on = QCheckBox("adb前亮屏")
+        self.adb_screen_on.setChecked(default_adb_screen_on)
+        layout.addWidget(self.adb_screen_on)
+
+        # 新增：亮屏后解锁设备选项
+        self.unlock_after_screen_on = QCheckBox("亮屏后解锁设备")
+        self.unlock_after_screen_on.setChecked(default_unlock_after_screen_on if default_unlock_after_screen_on is not None else False)
+        layout.addWidget(self.unlock_after_screen_on)
+
+        # 设备密码输入框（密码模式）
+        self.device_password_edit = QLineEdit(default_device_password if default_device_password else "")
+        self.device_password_edit.setPlaceholderText("设备解锁密码")
+        self.device_password_edit.setEchoMode(QLineEdit.Password)
+        layout.addWidget(QLabel("设备解锁密码："))
+        layout.addWidget(self.device_password_edit)
+
         # 按钮
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -189,7 +220,11 @@ class SettingsDialog(QDialog):
             self.uid_edit.text().strip(),
             self.topic_edit.text().strip(),
             self.enable_card_reader.isChecked(),
-            self.enable_adb_connect.isChecked()
+            self.enable_adb_connect.isChecked(),
+            self.music_screen_on.isChecked(),
+            self.adb_screen_on.isChecked(),
+            self.unlock_after_screen_on.isChecked(),
+            self.device_password_edit.text().strip()
         )
 
 # ---------------- 主窗口 ----------------
@@ -296,7 +331,7 @@ class Launcher(QMainWindow):
 
         # 右下角加一小段文字
         copyright_label = QLabel("by mryuzhu")
-        copyright_label.setStyleSheet("color: gray; font-size: 20px;")
+        copyright_label.setStyleSheet("color: gray; font-size: 15px;")
         copyright_label.setAlignment(Qt.AlignRight | Qt.AlignBottom)
         self.vbox.addWidget(copyright_label)
 
@@ -309,9 +344,13 @@ class Launcher(QMainWindow):
         default_topic = cfg.get("_bafy_topic", "")
         default_enable_card = cfg.get("_enable_card_reader", True)
         default_enable_adb = cfg.get("_enable_adb_connect", True)
-        dlg = SettingsDialog(self, default_platform, default_ip, default_serial, default_uid, default_topic, default_enable_card, default_enable_adb)
+        default_music_screen_on = cfg.get("_music_screen_on", True)
+        default_adb_screen_on = cfg.get("_adb_screen_on", True)
+        default_unlock_after_screen_on = cfg.get("_unlock_after_screen_on", False)
+        default_device_password = cfg.get("_device_password", "")
+        dlg = SettingsDialog(self, default_platform, default_ip, default_serial, default_uid, default_topic, default_enable_card, default_enable_adb, default_music_screen_on, default_adb_screen_on, default_unlock_after_screen_on, default_device_password)
         if dlg.exec_() == QDialog.Accepted:
-            platform, ip, serial_port, uid, topic, enable_card, enable_adb = dlg.get_values()
+            (platform, ip, serial_port, uid, topic, enable_card, enable_adb, music_screen_on, adb_screen_on, unlock_after_screen_on, device_password) = dlg.get_values()
             cfg["_music_platform"] = platform
             cfg["_adb_ip"] = ip
             cfg["_serial_port"] = serial_port
@@ -319,6 +358,10 @@ class Launcher(QMainWindow):
             cfg["_bafy_topic"] = topic
             cfg["_enable_card_reader"] = enable_card
             cfg["_enable_adb_connect"] = enable_adb
+            cfg["_music_screen_on"] = music_screen_on
+            cfg["_adb_screen_on"] = adb_screen_on
+            cfg["_unlock_after_screen_on"] = unlock_after_screen_on
+            cfg["_device_password"] = device_password
             save_config(cfg)
             QMessageBox.information(self, "设置", f"已保存设置！")
 
@@ -559,26 +602,82 @@ class Launcher(QMainWindow):
         return delete
 
     def run_item(self, name, brightness_value=None):
-        """
-        执行启动项对应的命令。
-        """
         info = self.cfg.get(name)
         if not info:
             QMessageBox.warning(self, "提示", f"未找到启动项：{name}")
             return
         item_type = info["type"].strip().lower()
-        print(f"run_item: name={name}, type={item_type}")
+        safe_print(f"run_item: name={name}, type={item_type}")
+
+        def try_screen_on():
+            try:
+                if is_screen_on() is not True:
+                    safe_print("屏幕未点亮，尝试亮屏")
+                    subprocess.Popen("adb shell input keyevent KEYCODE_POWER", shell=True)
+                    time.sleep(1)
+                    # 亮屏后解锁
+                    unlock = self.cfg.get("_unlock_after_screen_on", False)
+                    pwd = self.cfg.get("_device_password", "")
+                    safe_print(f"解锁开关: {unlock}, 密码: {'有' if pwd else '无'}")
+                    if unlock:
+                        if pwd:
+                            safe_print("亮屏后自动解锁设备")
+                            subprocess.Popen(f'adb shell input text "{pwd}"', shell=True)
+                            time.sleep(1)
+                else:
+                    safe_print("屏幕已点亮，无需亮屏")
+            except Exception as e:
+                safe_print("亮屏检测失败，尝试亮屏", e)
+                subprocess.Popen("adb shell input keyevent KEYCODE_POWER", shell=True)
+                time.sleep(1)
+                unlock = self.cfg.get("_unlock_after_screen_on", False)
+                pwd = self.cfg.get("_device_password", "")
+                safe_print(f"解锁开关: {unlock}, 密码: {'有' if pwd else '无'}")
+                if unlock:
+                    if pwd:
+                        safe_print("亮屏后自动解锁设备")
+                        subprocess.Popen(f'adb shell input text "{pwd}"', shell=True)
+                        time.sleep(1)
+
         if item_type == "exe":
-            try:
-                subprocess.Popen(info["cmd"], shell=True)
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"启动失败: {e}")
+            cmds = info["cmd"].splitlines()
+            def run_cmds():
+                for idx, cmd in enumerate(cmds):
+                    cmd = cmd.strip()
+                    if not cmd:
+                        continue
+                    exe_path = cmd.split()[0].strip('"')
+                    if not os.path.exists(exe_path):
+                        QMessageBox.critical(self, "错误", f"文件不存在: {exe_path}")
+                        continue
+                    safe_print(f"执行命令: {cmd}")
+                    try:
+                        subprocess.Popen(cmd, shell=True)
+                    except Exception as e:
+                        QMessageBox.critical(self, "错误", f"命令执行失败: {e}")
+                    if idx < len(cmds) - 1:
+                        time.sleep(1)
+            threading.Thread(target=run_cmds, daemon=True).start()
         elif item_type == "adb":
-            try:
-                subprocess.Popen(info["cmd"], shell=True)
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"ADB命令执行失败: {e}")
+            if self.cfg.get("_adb_screen_on", True):
+                try_screen_on()
+            cmds = info["cmd"].splitlines()
+            def run_cmds():
+                for idx, cmd in enumerate(cmds):
+                    cmd = cmd.strip()
+                    if not cmd:
+                        continue
+                    print(f"执行命令: {cmd}")
+                    try:
+                        subprocess.Popen(cmd, shell=True)
+                    except Exception as e:
+                        QMessageBox.critical(self, "错误", f"命令执行失败: {e}")
+                    if idx < len(cmds) - 1:
+                        time.sleep(1)
+            threading.Thread(target=run_cmds, daemon=True).start()
         elif item_type == "music":
+            if self.cfg.get("_music_screen_on", True):
+                try_screen_on()
             try:
                 cmd_data = info.get("cmd", "")
                 # 如果cmd_data看起来像完整URI，直接用
@@ -598,7 +697,7 @@ class Launcher(QMainWindow):
                     scheme = info.get("uri_scheme", "kugou://start.weixin")
                     final_uri = f'{scheme}?{encoded_uri}'
                 adb_cmd = f'adb shell am start -a android.intent.action.VIEW -d "{final_uri}"'
-                print("执行命令：", adb_cmd)
+                safe_print(f"执行命令：{adb_cmd}")
                 subprocess.Popen(adb_cmd, shell=True)
             except Exception as e:
                 QMessageBox.critical(self, "错误", f"音乐启动失败：{e}")
@@ -724,6 +823,29 @@ class Launcher(QMainWindow):
 
         t = threading.Thread(target=mqtt_thread, daemon=True)
         t.start()
+
+import subprocess
+import re
+
+def is_screen_on():
+    try:
+        result = subprocess.run(
+            ["adb", "shell", "dumpsys", "display"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",      # 强制用utf-8解码
+            errors="ignore"        # 忽略无法解码的字符
+        )
+        if result.returncode != 0:
+            return None
+        match = re.search(r'mState=(ON|OFF)', result.stdout)
+        if not match:
+            return None
+        state = match.group(1)
+        return state == "ON"
+    except Exception:
+        return None
 
 # ---------------- 启动 ----------------
 if __name__ == "__main__":
