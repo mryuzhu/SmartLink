@@ -1,5 +1,6 @@
 import sys
 
+CREATE_NO_WINDOW = 0x08000000  # 防止弹出黑色cmd窗口，仅限Windows
 def safe_print(*args, **kwargs):
     try:
         print(*args, **kwargs)
@@ -646,17 +647,29 @@ class Launcher(QMainWindow):
                     cmd = cmd.strip()
                     if not cmd:
                         continue
-                    exe_path = cmd.split()[0].strip('"')
-                    if not os.path.exists(exe_path):
-                        QMessageBox.critical(self, "错误", f"文件不存在: {exe_path}")
-                        continue
-                    safe_print(f"执行命令: {cmd}")
-                    try:
-                        subprocess.Popen(cmd, shell=True)
-                    except Exception as e:
-                        QMessageBox.critical(self, "错误", f"命令执行失败: {e}")
-                    if idx < len(cmds) - 1:
-                        time.sleep(1)
+                    # 判断是否为关机命令
+                    if "shutdown" in cmd.lower():
+                        safe_print(f"执行关机命令: {cmd}")
+                        try:
+                            subprocess.run(cmd, shell=True, creationflags=CREATE_NO_WINDOW)
+                        except Exception as e:
+                            safe_print(f"关机命令执行失败: {e}")
+                    else:
+                        # 判断路径是否存在（去除参数和引号）
+                        exe_path = cmd
+                        if cmd.startswith('"') and cmd.endswith('"'):
+                            exe_path = cmd[1:-1]
+                        elif " " in cmd and not cmd.startswith('"'):
+                            exe_path = cmd.split(" ")[0]
+                        # 只检查主程序路径是否存在
+                        if not os.path.exists(exe_path):
+                            safe_print(f"文件不存在: {exe_path}")
+                            continue
+                        safe_print(f"执行命令: {cmd}")
+                        try:
+                            subprocess.Popen(cmd, shell=True, creationflags=CREATE_NO_WINDOW)
+                        except Exception as e:
+                            safe_print(f"命令执行失败: {e}")
             threading.Thread(target=run_cmds, daemon=True).start()
         elif item_type == "adb":
             if self.cfg.get("_adb_screen_on", True):
