@@ -1,6 +1,5 @@
 import sys
 
-CREATE_NO_WINDOW = 0x08000000  # 防止弹出黑色cmd窗口，仅限Windows
 def safe_print(*args, **kwargs):
     try:
         print(*args, **kwargs)
@@ -22,8 +21,21 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon  # 新增导入
 from PyQt5.QtCore import Qt  # 新增导入
+from PyQt5.QtCore import QTimer
 import paho.mqtt.client as mqtt
 #作者羽竹and chatgpt4.1
+class LogWindow(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("日志输出")
+        self.resize(600, 400)
+        self.text_edit = QTextEdit(self)
+        self.text_edit.setReadOnly(True)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.text_edit)
+
+    def append_log(self, msg):
+        self.text_edit.append(msg)
 # 修改配置文件路径为用户目录
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), "launcher_config.json")
 
@@ -375,7 +387,7 @@ class Launcher(QMainWindow):
             return
         cmd = f'adb connect {ip}'
         try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+            result = subprocess.run(cmd, shell=True,creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, text=True, encoding="utf-8", errors="ignore")
             print("stdout:", result.stdout)
             print("stderr:", result.stderr)
             if result.returncode == 0:
@@ -383,7 +395,7 @@ class Launcher(QMainWindow):
             else:
                 QMessageBox.critical(self, "连接失败", result.stderr or result.stdout)
         except Exception as e:
-            QMessageBox.critical(self, "执行失败", str(e))
+            self.show_error_message("错误", f"命令执行失败: {e}")
 
     def start_card_reader_thread(self):
         """
@@ -614,7 +626,7 @@ class Launcher(QMainWindow):
             try:
                 if is_screen_on() is not True:
                     safe_print("屏幕未点亮，尝试亮屏")
-                    subprocess.Popen("adb shell input keyevent KEYCODE_POWER", shell=True)
+                    subprocess.Popen("adb shell input keyevent KEYCODE_POWER", shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
                     time.sleep(1)
                     # 亮屏后解锁
                     unlock = self.cfg.get("_unlock_after_screen_on", False)
@@ -623,13 +635,13 @@ class Launcher(QMainWindow):
                     if unlock:
                         if pwd:
                             safe_print("亮屏后自动解锁设备")
-                            subprocess.Popen(f'adb shell input text "{pwd}"', shell=True)
+                            subprocess.Popen(f'adb shell input text "{pwd}"', shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
                             time.sleep(1)
                 else:
                     safe_print("屏幕已点亮，无需亮屏")
             except Exception as e:
                 safe_print("亮屏检测失败，尝试亮屏", e)
-                subprocess.Popen("adb shell input keyevent KEYCODE_POWER", shell=True)
+                subprocess.Popen("adb shell input keyevent KEYCODE_POWER", shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 time.sleep(1)
                 unlock = self.cfg.get("_unlock_after_screen_on", False)
                 pwd = self.cfg.get("_device_password", "")
@@ -637,7 +649,7 @@ class Launcher(QMainWindow):
                 if unlock:
                     if pwd:
                         safe_print("亮屏后自动解锁设备")
-                        subprocess.Popen(f'adb shell input text "{pwd}"', shell=True)
+                        subprocess.Popen(f'adb shell input text "{pwd}"', shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
                         time.sleep(1)
 
         if item_type == "exe":
@@ -647,44 +659,33 @@ class Launcher(QMainWindow):
                     cmd = cmd.strip()
                     if not cmd:
                         continue
-                    # 判断是否为关机命令
-                    if "shutdown" in cmd.lower():
-                        safe_print(f"执行关机命令: {cmd}")
-                        try:
-                            subprocess.run(cmd, shell=True, creationflags=CREATE_NO_WINDOW)
-                        except Exception as e:
-                            safe_print(f"关机命令执行失败: {e}")
-                    else:
-                        # 判断路径是否存在（去除参数和引号）
-                        exe_path = cmd
-                        if cmd.startswith('"') and cmd.endswith('"'):
-                            exe_path = cmd[1:-1]
-                        elif " " in cmd and not cmd.startswith('"'):
-                            exe_path = cmd.split(" ")[0]
-                        # 只检查主程序路径是否存在
-                        if not os.path.exists(exe_path):
-                            safe_print(f"文件不存在: {exe_path}")
-                            continue
-                        safe_print(f"执行命令: {cmd}")
-                        try:
-                            subprocess.Popen(cmd, shell=True, creationflags=CREATE_NO_WINDOW)
-                        except Exception as e:
-                            safe_print(f"命令执行失败: {e}")
+                    safe_print(f"执行命令: {cmd}")
+                    try:
+                        subprocess.Popen(cmd, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                    except Exception as e:
+                        self.show_error_message("错误", f"命令执行失败: {e}")
+                    if idx < len(cmds) - 1:
+                        time.sleep(1)
             threading.Thread(target=run_cmds, daemon=True).start()
         elif item_type == "adb":
             if self.cfg.get("_adb_screen_on", True):
-                try_screen_on()
+               try_screen_on()
             cmds = info["cmd"].splitlines()
             def run_cmds():
                 for idx, cmd in enumerate(cmds):
                     cmd = cmd.strip()
                     if not cmd:
-                        continue
-                    print(f"执行命令: {cmd}")
+                      continue
+                    safe_print(f"执行命令: {cmd}")
                     try:
-                        subprocess.Popen(cmd, shell=True)
+                        import shlex
+                        if cmd.startswith("adb "):
+                            cmd_list = shlex.split(cmd)
+                            subprocess.Popen(cmd_list, creationflags=subprocess.CREATE_NO_WINDOW)
+                        else:
+                            subprocess.Popen(cmd, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
                     except Exception as e:
-                        QMessageBox.critical(self, "错误", f"命令执行失败: {e}")
+                        self.show_error_message("错误", f"命令执行失败: {e}")
                     if idx < len(cmds) - 1:
                         time.sleep(1)
             threading.Thread(target=run_cmds, daemon=True).start()
@@ -711,7 +712,7 @@ class Launcher(QMainWindow):
                     final_uri = f'{scheme}?{encoded_uri}'
                 adb_cmd = f'adb shell am start -a android.intent.action.VIEW -d "{final_uri}"'
                 safe_print(f"执行命令：{adb_cmd}")
-                subprocess.Popen(adb_cmd, shell=True)
+                subprocess.Popen(adb_cmd, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
             except Exception as e:
                 QMessageBox.critical(self, "错误", f"音乐启动失败：{e}")
         elif item_type == "brightness":
@@ -725,7 +726,7 @@ class Launcher(QMainWindow):
                 cmd = cmd_template.replace("XXX", str(value))
                 print(f"执行亮度命令: {cmd}")
                 try:
-                    subprocess.Popen(cmd, shell=True)
+                    subprocess.Popen(cmd, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 except Exception as e:
                     QMessageBox.critical(self, "错误", f"亮度设置失败: {e}")
 
@@ -860,9 +861,12 @@ def is_screen_on():
     except Exception:
         return None
 
+def show_error_message(self, title, msg):
+    QTimer.singleShot(0, lambda: QMessageBox.critical(self, title, msg))
+
 # ---------------- 启动 ----------------
 if __name__ == "__main__":
-    # 应用程序入口
+    # 应用程序入口 
     app = QApplication(sys.argv)
     win = Launcher()
     # 判断命令行参数
