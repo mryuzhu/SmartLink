@@ -77,4 +77,3 @@ url获取参考https://blog.csdn.net/Claffic/article/details/129218691或者其�
 
 或者app NFC writer 自带音乐解析 解析后的链接粘贴到启动器里面的解析器里，将解析后的内容粘贴进命令，选择music（酷狗的链接太复杂了没办法）
 ```
-
