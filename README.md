@@ -61,11 +61,7 @@ adb version          # 确认已安装并加入 PATH
 “把灯调到 50” → 屏幕亮度 50%
 具体名称可在巴法云内自定义，或者使用小爱训练自定义命令。
 
-## 控制安卓设备放歌
-选择adb（酷狗选择music）
-命令格式
-adb shell am start -a android.intent.action.VIEW -d <url>
-
+---
 ## 控制安卓设备放歌
 选择adb（酷狗选择music）
 命令格式
@@ -80,3 +76,5 @@ url获取参考https://blog.csdn.net/Claffic/article/details/129218691或者其�
 { "cmd": 212, "jsonStr": { "bitrate": 128, "duration": 239, "extname": "mp3", "filename": "G.E.M. 邓紫棋 - 喜欢你", "hash": "cff4d61fa1318100ce18a88ebb52e335" } }
 
 或者app NFC writer 自带音乐解析 解析后的链接粘贴到启动器里面的解析器里，将解析后的内容粘贴进命令，选择music（酷狗的链接太复杂了没办法）
+```
+
