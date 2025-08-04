@@ -76,5 +76,7 @@ url获取参考https://blog.csdn.net/Claffic/article/details/129218691或者其�
 酷狗音乐需获取哈希
 参考教程https://www.cnblogs.com/apresunday/p/8448126.html
 格式示例
+
 { "cmd": 212, "jsonStr": { "bitrate": 128, "duration": 239, "extname": "mp3", "filename": "G.E.M. 邓紫棋 - 喜欢你", "hash": "cff4d61fa1318100ce18a88ebb52e335" } }
+
 或者app NFC writer 自带音乐解析 解析后的链接粘贴到启动器里面的解析器里，将解析后的内容粘贴进命令，选择music（酷狗的链接太复杂了没办法）
