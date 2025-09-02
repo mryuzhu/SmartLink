@@ -1,42 +1,37 @@
+# 依赖安装 + 打包 + 运行说明：
+# 1. 安装依赖：pip install flask pyserial paho-mqtt pystray pillow
+# 2. 打包为exe：pyinstaller -F SmartLink.py
+# 3. 运行：双击 SmartLink.py 或命令行 python SmartLink.py
+# 新增依赖：pystray pillow
+# 打包提示：如需托盘图标请确保 icon.ico 文件存在于同目录，否则自动生成蓝底白字“SL”图标
+
 import sys
+import os
+import json
+import threading
+import time
+import subprocess
+import webbrowser
+import serial
+import re
+import urllib.parse
+from flask import Flask, request, redirect, url_for, render_template_string, jsonify, flash
 
-def safe_print(*args, **kwargs):
-    try:
-        print(*args, **kwargs)
-    except UnicodeEncodeError:
-        msg = " ".join(str(a) for a in args)
-        print(msg.encode('gbk', errors='replace').decode('gbk'), **kwargs)
+# 新增：系统托盘相关依赖
+import io
+import base64
+try:
+    import pystray
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    pystray = None
+    Image = None
 
-import argparse
-import json, os, subprocess, urllib.parse
-import threading  # 已有，无需重复导入
-import serial  # 需 pip install pyserial
-import time       # 已有，无需重复导入
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLineEdit, QTextEdit, QMessageBox, QComboBox,
-    QFileDialog, QDialog, QLabel, QDialogButtonBox, QAction, QInputDialog,
-    QSystemTrayIcon, QMenu, QCheckBox
-)
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QIcon  # 新增导入
-from PyQt5.QtCore import Qt  # 新增导入
-from PyQt5.QtCore import QTimer
-import paho.mqtt.client as mqtt
-#作者羽竹and chatgpt4.1
-class LogWindow(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("日志输出")
-        self.resize(600, 400)
-        self.text_edit = QTextEdit(self)
-        self.text_edit.setReadOnly(True)
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.text_edit)
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    mqtt = None
 
-    def append_log(self, msg):
-        self.text_edit.append(msg)
-# 修改配置文件路径为用户目录
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), "launcher_config.json")
 
 MUSIC_PLATFORMS = {
@@ -47,11 +42,7 @@ MUSIC_PLATFORMS = {
     "Apple Music": "applemusic://start.weixin"
 }
 
-# ---------------- 配置读写 ----------------
 def load_config():
-    """
-    从配置文件读取启动项配置，返回字典。
-    """
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -59,787 +50,132 @@ def load_config():
         return {}
 
 def save_config(cfg):
-    """
-    将启动项配置写入配置文件。
-    """
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=4, ensure_ascii=False)
 
-# ---------------- 编辑对话框 ----------------
-class EditDialog(QDialog):
-    """
-    添加/编辑启动项的对话框。
-    """
-    def __init__(self, parent=None, name=None, cfg=None):
-        super().__init__(parent)
-        self.setWindowTitle("添加/编辑")
-        self.resize(400, 260)
-
-        # 名称输入框
-        self.name_edit = QLineEdit(name or "")
-        # 类型下拉框（exe/adb/music）
-        self.type_combo = QComboBox()
-        self.type_combo.addItems(["exe", "adb", "music", "brightness"])
-        # 路径/命令输入框
-        self.cmd_edit = QTextEdit(cfg["cmd"] if cfg else "")
-
-        # 新增音乐平台协议输入框
-        self.uri_scheme_edit = QLineEdit()
-        self.uri_scheme_edit.setPlaceholderText("如 kugou://start.weixin")
-        if cfg and "uri_scheme" in cfg:
-            self.uri_scheme_edit.setText(cfg["uri_scheme"])
-        else:
-            self.uri_scheme_edit.setText("kugou://start.weixin")
-
-        # 新增卡号输入框
-        self.card_id_edit = QLineEdit(cfg.get("card_id", "") if cfg else "")
-        self.card_id_edit.setPlaceholderText("可选，刷卡器卡号或多个卡号用英文逗号分隔")
-
-        # 新增：巴法云Topic输入框
-        self.bafy_topic_edit = QLineEdit(cfg.get("bafy_topic", "") if cfg else "")
-        self.bafy_topic_edit.setPlaceholderText("可选，巴法云Topic，云端按钮控制")
-        
-        form = QVBoxLayout(self)
-        form.addWidget(QLabel("名称："))
-        form.addWidget(self.name_edit)
-        form.addWidget(QLabel("类型："))
-        form.addWidget(self.type_combo)
-        form.addWidget(QLabel("音乐平台协议（仅music类型需填）："))
-        form.addWidget(self.uri_scheme_edit)
-        form.addWidget(QLabel("路径 / 命令 / 音乐JSON："))
-        form.addWidget(self.cmd_edit)
-        form.addWidget(QLabel("绑定卡号（可选，多个用英文逗号分隔）："))
-        form.addWidget(self.card_id_edit)
-        form.addWidget(QLabel("巴法云Topic（可选，云端按钮控制）："))
-        form.addWidget(self.bafy_topic_edit)
-
-        if cfg:
-            self.type_combo.setCurrentText(cfg["type"])
-            if cfg["type"] == "exe":
-                browse_btn = QPushButton("浏览...")
-                browse_btn.clicked.connect(self.browse_exe)
-                form.addWidget(browse_btn)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        form.addWidget(buttons)
-
-    def browse_exe(self):
-        """
-        弹出文件选择对话框，选择exe文件。
-        """
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择可执行文件", "", "可执行文件 (*.exe)")
-        if file_path:
-            self.cmd_edit.setPlainText(file_path.replace("/", "\\"))
-
-    def get_data(self):
-        """
-        获取对话框中填写的数据。
-        """
-        return {
-            "type": self.type_combo.currentText(),
-            "cmd": self.cmd_edit.toPlainText().strip(),
-            "uri_scheme": self.uri_scheme_edit.text().strip(),
-            "card_id": self.card_id_edit.text().strip(),
-            "bafy_topic": self.bafy_topic_edit.text().strip()  # 新增
+def default_config(cfg):
+    changed = False
+    if "关机" not in cfg:
+        cfg["关机"] = {
+            "type": "exe",
+            "cmd": "shutdown -s -t 60",
+            "uri_scheme": "",
+            "card_id": "",
+            "bafy_topic": "off001"
         }
+        changed = True
+    if "设置亮度" not in cfg:
+        cfg["设置亮度"] = {
+            "type": "brightness",
+            "cmd": 'WMIC /NAMESPACE:\\\\root\\wmi PATH WmiMonitorBrightnessMethods WHERE "Active=TRUE" CALL WmiSetBrightness Brightness=XXX Timeout=0',
+            "uri_scheme": "",
+            "card_id": "",
+            "bafy_topic": "brightness002"
+        }
+        changed = True
+    if "邓紫棋-喜欢你" not in cfg:
+        cfg["邓紫棋-喜欢你"] = {
+            "type": "music",
+            "cmd": "{\n    \"cmd\": 212,\n    \"jsonStr\": {\n        \"bitrate\": 128,\n        \"duration\": 239,\n        \"extname\": \"mp3\",\n        \"filename\": \"G.E.M. 邓紫棋 - 喜欢你\",\n        \"hash\": \"cff4d61fa1318100ce18a88ebb52e335\"\n    }\n}",
+            "uri_scheme": "kugou://start.weixin",
+            "card_id": "",
+            "bafy_topic": ""
+        }
+        changed = True
+    if changed:
+        save_config(cfg)
+    return cfg
 
-# ---------------- 设置对话框 ----------------
-class SettingsDialog(QDialog):
-    """
-    设置对话框：可设置首选音乐平台、ADB设备IP、巴法云UID和Topic
-    """
-    def __init__(self, parent=None, default_platform="酷狗音乐", default_ip="", default_serial="COM3", default_uid="", default_topic="", default_enable_card=True, default_enable_adb=True, default_music_screen_on=True, default_adb_screen_on=True, default_unlock_after_screen_on=False, default_device_password=""):
-        super().__init__(parent)
-        self.setWindowTitle("设置")
-        self.resize(320, 240)
-        layout = QVBoxLayout(self)
+background_threads = []
 
-        # 音乐平台下拉框
-        self.platform_combo = QComboBox()
-        self.platform_combo.addItems(MUSIC_PLATFORMS.keys())
-        self.platform_combo.setCurrentText(default_platform)
-        layout.addWidget(QLabel("首选音乐平台："))
-        layout.addWidget(self.platform_combo)
+def run_in_thread(fn, *args, **kwargs):
+    t = threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True)
+    t.start()
+    background_threads.append(t)
+    return t
 
-        # ADB IP输入框
-        self.ip_edit = QLineEdit(default_ip)
-        self.ip_edit.setPlaceholderText("如 192.168.1.123")
-        layout.addWidget(QLabel("ADB设备IP："))
-        layout.addWidget(self.ip_edit)
-
-        # 巴法云UID
-        self.uid_edit = QLineEdit(default_uid)
-        self.uid_edit.setPlaceholderText("巴法云UID（必填）")
-        layout.addWidget(QLabel("巴法云UID："))
-        layout.addWidget(self.uid_edit)
-
-        # 巴法云Topic
-        self.topic_edit = QLineEdit(default_topic)
-        self.topic_edit.setPlaceholderText("巴法云Topic（如 yourTopic006）")
-        layout.addWidget(QLabel("巴法云Topic："))
-        layout.addWidget(self.topic_edit)
-
-        # 串口号输入框
-        self.serial_port_edit = QLineEdit(default_serial)
-        self.serial_port_edit.setPlaceholderText("如 COM3")
-        layout.addWidget(QLabel("读卡器串口号："))
-        layout.addWidget(self.serial_port_edit)
-
-        # 读卡器开关
-        self.enable_card_reader = QCheckBox("启用读卡器")
-        self.enable_card_reader.setChecked(default_enable_card if default_enable_card is not None else True)
-        layout.addWidget(self.enable_card_reader)
-
-        # 启动时ADB连接开关
-        self.enable_adb_connect = QCheckBox("启动时进行ADB连接")
-        self.enable_adb_connect.setChecked(default_enable_adb if default_enable_adb is not None else True)
-        layout.addWidget(self.enable_adb_connect)
-
-        # 新增：音乐和ADB前亮屏选项
-        self.music_screen_on = QCheckBox("播放音乐前亮屏")
-        self.music_screen_on.setChecked(default_music_screen_on)
-        layout.addWidget(self.music_screen_on)
-
-        self.adb_screen_on = QCheckBox("adb前亮屏")
-        self.adb_screen_on.setChecked(default_adb_screen_on)
-        layout.addWidget(self.adb_screen_on)
-
-        # 新增：亮屏后解锁设备选项
-        self.unlock_after_screen_on = QCheckBox("亮屏后解锁设备")
-        self.unlock_after_screen_on.setChecked(default_unlock_after_screen_on if default_unlock_after_screen_on is not None else False)
-        layout.addWidget(self.unlock_after_screen_on)
-
-        # 设备密码输入框（密码模式）
-        self.device_password_edit = QLineEdit(default_device_password if default_device_password else "")
-        self.device_password_edit.setPlaceholderText("设备解锁密码")
-        self.device_password_edit.setEchoMode(QLineEdit.Password)
-        layout.addWidget(QLabel("设备解锁密码："))
-        layout.addWidget(self.device_password_edit)
-
-        # 按钮
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def get_values(self):
-        return (
-            self.platform_combo.currentText(),
-            self.ip_edit.text().strip(),
-            self.serial_port_edit.text().strip(),
-            self.uid_edit.text().strip(),
-            self.topic_edit.text().strip(),
-            self.enable_card_reader.isChecked(),
-            self.enable_adb_connect.isChecked(),
-            self.music_screen_on.isChecked(),
-            self.adb_screen_on.isChecked(),
-            self.unlock_after_screen_on.isChecked(),
-            self.device_password_edit.text().strip()
-        )
-
-# ---------------- 主窗口 ----------------
-class Launcher(QMainWindow):
-    """
-    启动器主窗口，显示所有启动项。
-    """
-    def __init__(self):
-        super().__init__()
-        self.setWindowIcon(QIcon("icon.ico"))  # 设置主窗口和任务栏图标
-        self.cfg = load_config()
-        # 自动添加“关机”启动项
-        if "关机" not in self.cfg:
-            self.cfg["关机"] = {
-                "type": "exe",
-                "cmd": "shutdown -s -t 60",
-                "uri_scheme": "",
-                "card_id": "",
-                "bafy_topic": "off001"  # 这里改为 off001
-            }
-            save_config(self.cfg)
-        # 自动添加“设置亮度”启动项
-        if "设置亮度" not in self.cfg:
-            self.cfg["设置亮度"] = {
-                "type": "brightness",
-                "cmd": 'WMIC /NAMESPACE:\\\\root\\wmi PATH WmiMonitorBrightnessMethods WHERE "Active=TRUE" CALL WmiSetBrightness Brightness=XXX Timeout=0',
-                "uri_scheme": "",
-                "card_id": "",
-                "bafy_topic": "brightness002"
-            }
-        # 自动添加“酷狗示例”启动项
-        if "酷狗示例" not in self.cfg:
-            self.cfg["邓紫棋-喜欢你"] = {
-                "type": "music",
-                "cmd": "{\n    \"cmd\": 212,\n    \"jsonStr\": {\n        \"bitrate\": 128,\n        \"duration\": 239,\n        \"extname\": \"mp3\",\n        \"filename\": \"G.E.M. 邓紫棋 - 喜欢你\",\n        \"hash\": \"cff4d61fa1318100ce18a88ebb52e335\"\n    }\n}",
-                "uri_scheme": "kugou://start.weixin",
-                "card_id": "",
-                "bafy_topic": ""
-            }
-
-            save_config(self.cfg)
-        self.last_card_time = 0  # 刷卡防抖
-        self.mqtt_clients = {}  # topic: client
-        self.current_page = 0  # 新增：当前页
-        self.items_per_page = 10  # 新增：每页显示数量
-        self.init_ui()
-        if self.cfg.get("_enable_adb_connect", True):
-            self.connect_device()
-        if self.cfg.get("_enable_card_reader", True):
-            self.start_card_reader_thread()
-        self.init_tray()
-        self.start_bafy_mqtt_listener()  # 新增：启动MQTT监听
-    def parse_args():
-        """解析命令行参数"""
-        parser = argparse.ArgumentParser()
-        parser.add_argument("-d", "--daemon", action="store_true", help="后台运行")
-        return parser.parse_args()
-
-    def init_ui(self):
-        """
-        初始化主界面。
-        """
-        self.setWindowTitle("启动器")
-        self.setGeometry(100, 100, 340, 480)
-
-        # 菜单栏添加设置、解析器、连接设备
-        menubar = self.menuBar()
-        settings_menu = menubar.addMenu("设置")
-        action_settings = QAction("设置", self)
-        action_settings.triggered.connect(self.open_settings)
-        settings_menu.addAction(action_settings)
-
-        # 解析器按钮
-        action_parser = QAction("酷狗音乐解析器", self)
-        action_parser.triggered.connect(self.open_parser)
-        menubar.addAction(action_parser)
-
-        # 连接设备按钮
-        action_connect = QAction("连接设备", self)
-        action_connect.triggered.connect(self.connect_device)
-        menubar.addAction(action_connect)
-
-        self.central = QWidget()
-        self.vbox = QVBoxLayout(self.central)
-        self.setCentralWidget(self.central)
-
-        self.add_btn = QPushButton("+ 新建")
-        self.add_btn.clicked.connect(self.add_item)
-        self.vbox.addWidget(self.add_btn)
-
-        # 新增：分页按钮
-        hbox = QHBoxLayout()
-        self.prev_btn = QPushButton("上一页")
-        self.prev_btn.clicked.connect(self.prev_page)
-        hbox.addWidget(self.prev_btn)
-        self.page_label = QLabel()
-        hbox.addWidget(self.page_label)
-        self.next_btn = QPushButton("下一页")
-        self.next_btn.clicked.connect(self.next_page)
-        hbox.addWidget(self.next_btn)
-        self.vbox.addLayout(hbox)
-
-        self.refresh_ui()
-
-        # 右下角加一小段文字
-        copyright_label = QLabel("by mryuzhu")
-        copyright_label.setStyleSheet("color: gray; font-size: 15px;")
-        copyright_label.setAlignment(Qt.AlignRight | Qt.AlignBottom)
-        self.vbox.addWidget(copyright_label)
-
-    def open_settings(self):
-        cfg = load_config()
-        default_platform = cfg.get("_music_platform", "酷狗音乐")
-        default_ip = cfg.get("_adb_ip", "")
-        default_serial = cfg.get("_serial_port", "COM3")
-        default_uid = cfg.get("_bafy_uid", "")
-        default_topic = cfg.get("_bafy_topic", "")
-        default_enable_card = cfg.get("_enable_card_reader", True)
-        default_enable_adb = cfg.get("_enable_adb_connect", True)
-        default_music_screen_on = cfg.get("_music_screen_on", True)
-        default_adb_screen_on = cfg.get("_adb_screen_on", True)
-        default_unlock_after_screen_on = cfg.get("_unlock_after_screen_on", False)
-        default_device_password = cfg.get("_device_password", "")
-        dlg = SettingsDialog(self, default_platform, default_ip, default_serial, default_uid, default_topic, default_enable_card, default_enable_adb, default_music_screen_on, default_adb_screen_on, default_unlock_after_screen_on, default_device_password)
-        if dlg.exec_() == QDialog.Accepted:
-            (platform, ip, serial_port, uid, topic, enable_card, enable_adb, music_screen_on, adb_screen_on, unlock_after_screen_on, device_password) = dlg.get_values()
-            cfg["_music_platform"] = platform
-            cfg["_adb_ip"] = ip
-            cfg["_serial_port"] = serial_port
-            cfg["_bafy_uid"] = uid
-            cfg["_bafy_topic"] = topic
-            cfg["_enable_card_reader"] = enable_card
-            cfg["_enable_adb_connect"] = enable_adb
-            cfg["_music_screen_on"] = music_screen_on
-            cfg["_adb_screen_on"] = adb_screen_on
-            cfg["_unlock_after_screen_on"] = unlock_after_screen_on
-            cfg["_device_password"] = device_password
-            save_config(cfg)
-            QMessageBox.information(self, "设置", f"已保存设置！")
-
-    def connect_device(self):
-        # 从配置读取IP
-        cfg = load_config()
-        ip = getattr(self, "adb_ip", None) or cfg.get("_adb_ip", "")
-        if not ip:
-            QMessageBox.warning(self, "未设置IP", "请先在设置中填写ADB设备IP。")
-            return
-        cmd = f'adb connect {ip}'
-        try:
-            result = subprocess.run(cmd, shell=True,creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, text=True, encoding="utf-8", errors="ignore")
-            print("stdout:", result.stdout)
-            print("stderr:", result.stderr)
-            if result.returncode == 0:
-                QMessageBox.information(self, "连接成功", result.stdout)
-            else:
-                QMessageBox.critical(self, "连接失败", result.stderr or result.stdout)
-        except Exception as e:
-            self.show_error_message("错误", f"命令执行失败: {e}")
-
-    def start_card_reader_thread(self):
-        """
-        启动后台线程监听串口读卡器。
-        """
-        def reader():
+def start_card_reader_thread(cfg_getter, run_item_fn):
+    def reader():
+        while True:
             try:
-                cfg = load_config()
+                cfg = cfg_getter()
                 serial_port = cfg.get("_serial_port", "COM3")
+                enable_card = cfg.get("_enable_card_reader", True)
+                if not enable_card:
+                    time.sleep(1)
+                    continue
                 ser = serial.Serial(serial_port, 9600, timeout=1)
                 while True:
                     data = ser.readline().decode(errors="ignore").strip()
                     if data:
-                        self.handle_card_id(data)
+                        for name, info in cfg.items():
+                            if name.startswith("_"):
+                                continue
+                            card_ids = [x.strip() for x in info.get("card_id", "").split(",") if x.strip()]
+                            if data in card_ids:
+                                run_item_fn(name)
+                                break
                     time.sleep(0.1)
             except Exception as e:
-                print("读卡器初始化失败:", e)
+                print("读卡器线程异常:", e)
+                time.sleep(5)
+    run_in_thread(reader)
 
-        t = threading.Thread(target=reader, daemon=True)
-        t.start()
-
-    def handle_card_id(self, card_id):
-        """
-        处理刷卡事件，自动匹配并执行启动项。
-        支持多个卡号用英文逗号分隔。
-        """
-        print("读取到卡号:", card_id)
-        for name, info in self.cfg.items():
-            if name.startswith("_"):
-                continue
-            card_ids = [x.strip() for x in info.get("card_id", "").split(",") if x.strip()]
-            if card_id in card_ids:
-                print(f"卡号 {card_id} 匹配到启动项：{name}，自动执行。")
-                self.run_item(name)
-                break
-
-    def refresh_ui(self):
-        """
-        刷新启动项列表UI，支持分组显示。
-        """
-        # 清除旧的按钮和布局，确保对象能被回收
-        for i in reversed(range(self.vbox.count())):
-            item = self.vbox.itemAt(i)
-            widget = item.widget()
-            layout = item.layout()
-            if widget and widget not in [self.add_btn, self.prev_btn, self.next_btn, self.page_label]:
-                widget.deleteLater()
-                self.vbox.removeWidget(widget)
-            elif layout and layout not in [self.vbox.itemAt(self.vbox.count()-1)]:
-                while layout.count():
-                    child = layout.takeAt(0)
-                    if child.widget():
-                        child.widget().deleteLater()
-                self.vbox.removeItem(layout)
-                del layout
-
-        # 获取所有启动项（不含下划线开头的）
-        items = [(name, info) for name, info in self.cfg.items() if not name.startswith("_")]
-        total = len(items)
-        total_pages = max(1, (total + self.items_per_page - 1) // self.items_per_page)
-        self.current_page = max(0, min(self.current_page, total_pages - 1))
-        start = self.current_page * self.items_per_page
-        end = start + self.items_per_page
-        page_items = items[start:end]
-
-        for name, info in page_items:
-            hbox = QHBoxLayout()
-            btn = QPushButton(name)
-            btn.clicked.connect(self._make_run_item(name))
-            hbox.addWidget(btn)
-            edit_btn = QPushButton("✏️")
-            edit_btn.setFixedWidth(30)
-            edit_btn.clicked.connect(self._make_edit_item(name))
-            hbox.addWidget(edit_btn)
-            del_btn = QPushButton("🗑️")
-            del_btn.setFixedWidth(30)
-            del_btn.clicked.connect(self._make_delete_item(name))
-            hbox.addWidget(del_btn)
-            self.vbox.insertLayout(self.vbox.count() - 1, hbox)  # 保证分页按钮在最下方
-
-        # 更新分页标签
-        self.page_label.setText(f"第 {self.current_page+1} / {total_pages} 页")
-        self.prev_btn.setEnabled(self.current_page > 0)
-        self.next_btn.setEnabled(self.current_page < total_pages - 1)
-
-    def prev_page(self):
-        if self.current_page > 0:
-            self.current_page -= 1
-            self.refresh_ui()
-
-    def next_page(self):
-        items = [(name, info) for name, info in self.cfg.items() if not name.startswith("_")]
-        total_pages = max(1, (len(items) + self.items_per_page - 1) // self.items_per_page)
-        if self.current_page < total_pages - 1:
-            self.current_page += 1
-            self.refresh_ui()
-
-    def open_parser(self):
-        """
-        解析器：将带协议的音乐启动链接还原为 JSON。
-        """
-        text, ok = QInputDialog.getMultiLineText(self, "解析器", "输入带协议的音乐启动链接：")
-        if not ok or not text.strip():
-            return
-
-        import re
-        import urllib.parse
-
-        # 提取问号后的内容
-        match = re.search(r'\?(.*)$', text.strip())
-        if not match:
-            QMessageBox.warning(self, "解析失败", "未找到 ? 后的内容")
-            return
-
-        encoded = match.group(1).strip()
-        # 尝试解码
-        try:
-            decoded = urllib.parse.unquote(encoded)
-            # 预处理：去掉所有多余的反斜杠
-            decoded = decoded.replace('\\', '')
-            # 再尝试转为 JSON
+def start_bafy_mqtt_listener(cfg_getter, run_item_fn):
+    if mqtt is None:
+        print("paho-mqtt 未安装，MQTT监听不可用")
+        return
+    def mqtt_thread():
+        while True:
             try:
-                obj = json.loads(decoded)
-            except Exception:
-                # 兼容直接写Python字典的情况
-                obj = eval(decoded)
-            formatted = json.dumps(obj, ensure_ascii=False, indent=4)
-            # 显示结果
-            dlg = QDialog(self)
-            dlg.setWindowTitle("解析结果")
-            vbox = QVBoxLayout(dlg)
-            edit = QTextEdit()
-            edit.setPlainText(formatted)
-            vbox.addWidget(edit)
-            btns = QDialogButtonBox(QDialogButtonBox.Ok)
-            btns.accepted.connect(dlg.accept)
-            vbox.addWidget(btns)
-            dlg.exec_()
-        except Exception as e:
-            QMessageBox.critical(self, "解析失败", f"错误: {e}")
-
-    def add_item(self):
-        """
-        新建启动项的对话框逻辑。
-        """
-        dlg = EditDialog(self)
-        if dlg.exec_() == QDialog.Accepted:
-            data = dlg.get_data()
-            name = dlg.name_edit.text().strip()
-            if not name:
-                QMessageBox.warning(self, "提示", "名称不能为空！")
-                return
-            self.cfg[name] = data
-            save_config(self.cfg)
-            self.refresh_ui()
-
-    def send_bafy_on(self):
-        """
-        发送“开”指令到巴法云（全局Topic）。
-        """
-        cfg = load_config()
-        topic = cfg.get("_bafy_topic", "")
-        uid = cfg.get("_bafy_uid", "")
-        if not topic or not uid:
-            QMessageBox.warning(self, "提示", "请先在设置中填写巴法云UID和Topic。")
-            return
-        client = mqtt.Client(client_id=uid)
-        try:
-            client.connect("bemfa.com", 9501, 60)
-            client.publish(topic, "on")
-            client.disconnect()
-            QMessageBox.information(self, "提示", f"已发送“开”指令到Topic: {topic}")
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"发送失败: {e}")
-
-    def send_bafy_off(self):
-        """
-        发送“关”指令到巴法云（全局Topic）。
-        """
-        cfg = load_config()
-        topic = cfg.get("_bafy_topic", "")
-        uid = cfg.get("_bafy_uid", "")
-        if not topic or not uid:
-            QMessageBox.warning(self, "提示", "请先在设置中填写巴法云UID和Topic。")
-            return
-        client = mqtt.Client(client_id=uid)
-        try:
-            client.connect("bemfa.com", 9501, 60)
-            client.publish(topic, "off")
-            client.disconnect()
-            QMessageBox.information(self, "提示", f"已发送“关”指令到Topic: {topic}")
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"发送失败: {e}")
-
-    def _make_run_item(self, name):
-        def run():
-            self.run_item(name)
-        return run
-
-    def _make_edit_item(self, name):
-        def edit():
-            cfg = self.cfg[name]
-            dlg = EditDialog(self, name, cfg)
-            if dlg.exec_() == QDialog.Accepted:
-                self.cfg[name] = dlg.get_data()
-                save_config(self.cfg)
-                self.refresh_ui()
-        return edit
-
-    def _make_delete_item(self, name):
-        def delete():
-            reply = QMessageBox.question(self, "确认", f"确定要删除启动项“{name}”吗？", QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                self.cfg.pop(name, None)
-                save_config(self.cfg)
-                self.refresh_ui()
-        return delete
-
-    def run_item(self, name, brightness_value=None):
-        info = self.cfg.get(name)
-        if not info:
-            QMessageBox.warning(self, "提示", f"未找到启动项：{name}")
-            return
-        item_type = info["type"].strip().lower()
-        safe_print(f"run_item: name={name}, type={item_type}")
-
-        def try_screen_on():
-            try:
-                if is_screen_on() is not True:
-                    safe_print("屏幕未点亮，尝试亮屏")
-                    subprocess.Popen("adb shell input keyevent KEYCODE_POWER", shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                    time.sleep(1)
-                    # 亮屏后解锁
-                    unlock = self.cfg.get("_unlock_after_screen_on", False)
-                    pwd = self.cfg.get("_device_password", "")
-                    safe_print(f"解锁开关: {unlock}, 密码: {'有' if pwd else '无'}")
-                    if unlock:
-                        if pwd:
-                            safe_print("亮屏后自动解锁设备")
-                            subprocess.Popen(f'adb shell input text "{pwd}"', shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                            time.sleep(1)
-                else:
-                    safe_print("屏幕已点亮，无需亮屏")
-            except Exception as e:
-                safe_print("亮屏检测失败，尝试亮屏", e)
-                subprocess.Popen("adb shell input keyevent KEYCODE_POWER", shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                time.sleep(1)
-                unlock = self.cfg.get("_unlock_after_screen_on", False)
-                pwd = self.cfg.get("_device_password", "")
-                safe_print(f"解锁开关: {unlock}, 密码: {'有' if pwd else '无'}")
-                if unlock:
-                    if pwd:
-                        safe_print("亮屏后自动解锁设备")
-                        subprocess.Popen(f'adb shell input text "{pwd}"', shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                        time.sleep(1)
-
-        if item_type == "exe":
-            cmds = info["cmd"].splitlines()
-            def run_cmds():
-                for idx, cmd in enumerate(cmds):
-                    cmd = cmd.strip()
-                    if not cmd:
+                cfg = cfg_getter()
+                topics = set()
+                for name, info in cfg.items():
+                    if name.startswith("_"):
                         continue
-                    safe_print(f"执行命令: {cmd}")
-                    try:
-                        subprocess.Popen(cmd, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                    except Exception as e:
-                        self.show_error_message("错误", f"命令执行失败: {e}")
-                    if idx < len(cmds) - 1:
-                        time.sleep(1)
-            threading.Thread(target=run_cmds, daemon=True).start()
-        elif item_type == "adb":
-            if self.cfg.get("_adb_screen_on", True):
-               try_screen_on()
-            cmds = info["cmd"].splitlines()
-            def run_cmds():
-                for idx, cmd in enumerate(cmds):
-                    cmd = cmd.strip()
-                    if not cmd:
-                      continue
-                    safe_print(f"执行命令: {cmd}")
-                    try:
-                        import shlex
-                        if cmd.startswith("adb "):
-                            cmd_list = shlex.split(cmd)
-                            subprocess.Popen(cmd_list, creationflags=subprocess.CREATE_NO_WINDOW)
-                        else:
-                            subprocess.Popen(cmd, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                    except Exception as e:
-                        self.show_error_message("错误", f"命令执行失败: {e}")
-                    if idx < len(cmds) - 1:
-                        time.sleep(1)
-            threading.Thread(target=run_cmds, daemon=True).start()
-        elif item_type == "music":
-            if self.cfg.get("_music_screen_on", True):
-                try_screen_on()
-            try:
-                cmd_data = info.get("cmd", "")
-                # 如果cmd_data看起来像完整URI，直接用
-                if isinstance(cmd_data, str) and (cmd_data.startswith("orpheus://") or cmd_data.startswith("ncm://") or cmd_data.startswith("qqmusic://") or cmd_data.startswith("kugou://") or cmd_data.startswith("kuwo://") or cmd_data.startswith("music://")):
-                    final_uri = cmd_data
-                else:
-                    # 兼容原有JSON格式
-                    if isinstance(cmd_data, str):
-                        try:
-                            music_json = json.loads(cmd_data)
-                        except Exception:
-                            music_json = eval(cmd_data)
-                    else:
-                        music_json = cmd_data
-                    json_str = json.dumps(music_json, ensure_ascii=False)
-                    encoded_uri = urllib.parse.quote(json_str)
-                    scheme = info.get("uri_scheme", "kugou://start.weixin")
-                    final_uri = f'{scheme}?{encoded_uri}'
-                adb_cmd = f'adb shell am start -a android.intent.action.VIEW -d "{final_uri}"'
-                safe_print(f"执行命令：{adb_cmd}")
-                subprocess.Popen(adb_cmd, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"音乐启动失败：{e}")
-        elif item_type == "brightness":
-            cmd_template = info["cmd"]
-            if brightness_value is not None:
-                value = brightness_value
-                ok = True
-            else:
-                value, ok = QInputDialog.getInt(self, "设置亮度", "请输入亮度（0-100）：", 50, 0, 100)
-            if ok:
-                cmd = cmd_template.replace("XXX", str(value))
-                print(f"执行亮度命令: {cmd}")
-                try:
-                    subprocess.Popen(cmd, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                except Exception as e:
-                    QMessageBox.critical(self, "错误", f"亮度设置失败: {e}")
-
-    def init_tray(self):
-        # 托盘图标
-        self.tray = QSystemTrayIcon(self)
-        self.tray.setIcon(QIcon("icon.ico"))
-        self.tray.setToolTip("启动器 by mryuzhu")
-
-        # 托盘菜单
-        menu = QMenu()
-        show_action = QAction("显示主界面", self)
-        show_action.triggered.connect(self.showNormal)
-        menu.addAction(show_action)
-
-        exit_action = QAction("退出", self)
-        exit_action.triggered.connect(QApplication.instance().quit)
-        menu.addAction(exit_action)
-
-        self.tray.setContextMenu(menu)
-        self.tray.activated.connect(self.on_tray_activated)
-        self.tray.show()
-
-    def on_tray_activated(self, reason):
-        if reason == QSystemTrayIcon.Trigger:
-            self.showNormal()
-            self.activateWindow()
-
-    def closeEvent(self, event):
-        # 重写关闭事件，隐藏窗口到托盘而不是退出
-        event.ignore()
-        self.hide()
-        self.tray.showMessage(
-            "启动器已最小化",
-            "程序仍在后台运行，点击托盘图标可恢复窗口。",
-            QSystemTrayIcon.Information,
-            2000
-        )
-
-    def start_bafy_mqtt_listener(self):
-        """
-        启动MQTT客户端，监听所有配置中出现过的bafy_topic。
-        """
-        topics = set()
-        # 收集所有启动项的bafy_topic
-        for name, info in self.cfg.items():
-            if name.startswith("_"):
-                continue
-            topic = info.get("bafy_topic")
-            if topic:
-                topics.add(topic)
-        # 也可加全局topic
-        global_topic = self.cfg.get("_bafy_topic", "")
-        if global_topic:
-            topics.add(global_topic)
-
-        uid = self.cfg.get("_bafy_uid", "")
-        if not uid or not topics:
-            print("未配置巴法云UID或Topic，MQTT监听未启动")
-            return
-
-        def on_connect(client, userdata, flags, rc):
-            print("MQTT连接结果:", rc)
-            for t in topics:
-                client.subscribe(t)
-                print(f"已订阅: {t}")
-
-        def on_message(client, userdata, msg):
-            payload = msg.payload.decode()
-            topic = msg.topic
-            print(f"收到MQTT消息: topic={topic}, payload={payload}")
-            for name, info in self.cfg.items():
-                if name.startswith("_"):
+                    topic = info.get("bafy_topic")
+                    if topic:
+                        topics.add(topic)
+                uid = cfg.get("_bafy_uid", "")
+                if not uid or not topics:
+                    time.sleep(5)
                     continue
-                if info.get("bafy_topic") == topic or topic == global_topic:
-                    item_type = info.get("type", "").strip().lower()
-                    # 关机项收到"off"才执行，其他项收到"on"才执行
-                    if name == "关机" and payload == "off":
-                        print(f"MQTT触发关机启动项: {name}")
-                        self.run_item(name)
-                    elif item_type in ["brightness", "value", "number"]:
-                        try:
-                            value = None
-                            if payload.startswith("on#"):
-                                value = int(payload.split("#")[1])
-                            elif payload.isdigit():
-                                value = int(payload)
-                            if value is not None:
-                                print(f"MQTT触发亮度设置: {info['cmd']}，目标亮度: {value}")
-                                self.run_item(name, brightness_value=value)
-                        except Exception as e:
-                            print("亮度指令处理失败:", e)
-                    elif name != "关机" and payload == "on":
-                        print(f"MQTT触发启动项: {name}")
-                        self.run_item(name)
-                    break
-
-        # 启动MQTT客户端线程
-        def mqtt_thread():
-            client = mqtt.Client(client_id=uid)
-            client.on_connect = on_connect
-            client.on_message = on_message
-            try:
+                client = mqtt.Client(client_id=uid)
+                def on_connect(client, userdata, flags, rc):
+                    for t in topics:
+                        client.subscribe(t)
+                def on_message(client, userdata, msg):
+                    payload = msg.payload.decode()
+                    topic = msg.topic
+                    for name, info in cfg.items():
+                        if name.startswith("_"):
+                            continue
+                        if info.get("bafy_topic") == topic:
+                            item_type = info.get("type", "").strip().lower()
+                            if name == "关机" and payload == "off":
+                                run_item_fn(name)
+                            elif item_type in ["brightness", "value", "number"]:
+                                try:
+                                    value = None
+                                    if payload.startswith("on#"):
+                                        value = int(payload.split("#")[1])
+                                    elif payload.isdigit():
+                                        value = int(payload)
+                                    if value is not None:
+                                        run_item_fn(name, brightness_value=value)
+                                except Exception:
+                                    pass
+                            elif name != "关机" and payload == "on":
+                                run_item_fn(name)
+                            break
+                client.on_connect = on_connect
+                client.on_message = on_message
                 client.connect("bemfa.com", 9501, 60)
                 client.loop_forever()
             except Exception as e:
-                print("MQTT连接失败:", e)
-
-        t = threading.Thread(target=mqtt_thread, daemon=True)
-        t.start()
-
-import subprocess
-import re
+                print("MQTT线程异常:", e)
+                time.sleep(5)
+    run_in_thread(mqtt_thread)
 
 def is_screen_on():
     try:
@@ -848,8 +184,8 @@ def is_screen_on():
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            encoding="utf-8",      # 强制用utf-8解码
-            errors="ignore"        # 忽略无法解码的字符
+            encoding="utf-8",
+            errors="ignore"
         )
         if result.returncode != 0:
             return None
@@ -861,17 +197,878 @@ def is_screen_on():
     except Exception:
         return None
 
-def show_error_message(self, title, msg):
-    QTimer.singleShot(0, lambda: QMessageBox.critical(self, title, msg))
+def run_item(name, brightness_value=None, cfg=None):
+    if cfg is None:
+        cfg = load_config()
+    info = cfg.get(name)
+    if not info:
+        return False, f"未找到启动项：{name}"
+    item_type = info["type"].strip().lower()
+    def try_screen_on():
+        try:
+            if is_screen_on() is not True:
+                subprocess.Popen("adb shell input keyevent KEYCODE_POWER", shell=True)
+                time.sleep(1)
+                unlock = cfg.get("_unlock_after_screen_on", False)
+                pwd = cfg.get("_device_password", "")
+                if unlock and pwd:
+                    subprocess.Popen(f'adb shell input text "{pwd}"', shell=True)
+                    time.sleep(1)
+        except Exception:
+            subprocess.Popen("adb shell input keyevent KEYCODE_POWER", shell=True)
+            time.sleep(1)
+            unlock = cfg.get("_unlock_after_screen_on", False)
+            pwd = cfg.get("_device_password", "")
+            if unlock and pwd:
+                subprocess.Popen(f'adb shell input text "{pwd}"', shell=True)
+                time.sleep(1)
+    if item_type == "exe":
+        cmds = info["cmd"].splitlines()
+        def run_cmds():
+            for idx, cmd in enumerate(cmds):
+                cmd = cmd.strip()
+                if not cmd:
+                    continue
+                try:
+                    subprocess.Popen(cmd, shell=True)
+                except Exception as e:
+                    print("命令执行失败:", e)
+                if idx < len(cmds) - 1:
+                    time.sleep(1)
+        run_in_thread(run_cmds)
+        return True, "已执行EXE命令"
+    elif item_type == "adb":
+        if cfg.get("_adb_screen_on", True):
+            try_screen_on()
+        cmds = info["cmd"].splitlines()
+        def run_cmds():
+            for idx, cmd in enumerate(cmds):
+                cmd = cmd.strip()
+                if not cmd:
+                    continue
+                try:
+                    import shlex
+                    if cmd.startswith("adb "):
+                        cmd_list = shlex.split(cmd)
+                        subprocess.Popen(cmd_list)
+                    else:
+                        subprocess.Popen(cmd, shell=True)
+                except Exception as e:
+                    print("命令执行失败:", e)
+                if idx < len(cmds) - 1:
+                    time.sleep(1)
+        run_in_thread(run_cmds)
+        return True, "已执行ADB命令"
+    elif item_type == "music":
+        if cfg.get("_music_screen_on", True):
+            try_screen_on()
+        try:
+            cmd_data = info.get("cmd", "")
+            if isinstance(cmd_data, str) and (cmd_data.startswith("orpheus://") or cmd_data.startswith("ncm://") or cmd_data.startswith("qqmusic://") or cmd_data.startswith("kugou://") or cmd_data.startswith("kuwo://") or cmd_data.startswith("music://")):
+                final_uri = cmd_data
+            else:
+                if isinstance(cmd_data, str):
+                    try:
+                        music_json = json.loads(cmd_data)
+                    except Exception:
+                        music_json = eval(cmd_data)
+                else:
+                    music_json = cmd_data
+                json_str = json.dumps(music_json, ensure_ascii=False)
+                scheme = info.get("uri_scheme", "kugou://start.weixin")
+                encoded_uri = urllib.parse.quote(json_str)
+                final_uri = f'{scheme}?{encoded_uri}'
+            adb_cmd = f'adb shell am start -a android.intent.action.VIEW -d "{final_uri}"'
+            subprocess.Popen(adb_cmd, shell=True)
+            return True, "已启动音乐"
+        except Exception as e:
+            return False, f"音乐启动失败：{e}"
+    elif item_type == "brightness":
+        cmd_template = info["cmd"]
+        if brightness_value is not None:
+            value = brightness_value
+            ok = True
+        else:
+            value = 50
+            ok = True
+        if ok:
+            cmd = cmd_template.replace("XXX", str(value))
+            try:
+                subprocess.Popen(cmd, shell=True)
+                return True, "已设置亮度"
+            except Exception as e:
+                return False, f"亮度设置失败: {e}"
+    return False, "未知类型"
 
-# ---------------- 启动 ----------------
-if __name__ == "__main__":
-    # 应用程序入口 
-    app = QApplication(sys.argv)
-    win = Launcher()
-    # 判断命令行参数
-    if "-help" in sys.argv:
-        win.hide()  # 直接隐藏窗口，仅托盘后台运行
+app = Flask(__name__)
+app.secret_key = "SmartLinkSecretKey"
+app.config['JSON_AS_ASCII'] = False
+
+@app.route("/", methods=["GET"])
+def index():
+    cfg = load_config()
+    cfg = default_config(cfg)
+    items = [(name, info) for name, info in cfg.items() if not name.startswith("_")]
+    categories = set(info["type"] for name, info in items)
+    query_type = request.args.get("type", "")
+    keyword = request.args.get("kw", "").strip()
+    filtered_items = items
+    if query_type:
+        filtered_items = [(n, i) for n, i in filtered_items if i["type"] == query_type]
+    if keyword:
+        # 支持按名称或巴法云 Topic 查询（不改变其他功能）
+        kw = keyword.lower()
+        filtered_items = [
+            (n, i) for n, i in filtered_items
+            if (kw in n.lower()) or (kw in (i.get("bafy_topic", "") or "").lower())
+        ]
+    settings = {
+        "adb_ip": cfg.get("_adb_ip", ""),
+        "serial_port": cfg.get("_serial_port", "COM3"),
+        "bafy_uid": cfg.get("_bafy_uid", ""),
+        "enable_card_reader": cfg.get("_enable_card_reader", True),
+        "enable_adb_connect": cfg.get("_enable_adb_connect", True),
+        "music_screen_on": cfg.get("_music_screen_on", True),
+        "adb_screen_on": cfg.get("_adb_screen_on", True),
+        "unlock_after_screen_on": cfg.get("_unlock_after_screen_on", False),
+        "device_password": cfg.get("_device_password", "")
+    }
+    item_json_map = {n: json.dumps(i, ensure_ascii=False) for n, i in items}
+    return render_template_string(PAGE_HTML,
+        items=filtered_items,
+        all_items=items,
+        settings=settings,
+        platforms=MUSIC_PLATFORMS,
+        categories=categories,
+        query_type=query_type,
+        keyword=keyword,
+        json=json,
+        enumerate=enumerate,
+        len=len,
+        item_json_map=item_json_map
+    )
+
+@app.route("/save_item", methods=["POST"])
+def save_item():
+    cfg = load_config()
+    old_name = request.form.get("old_name", "").strip()
+    name = request.form.get("name", "").strip()
+    info = {
+        "type": request.form.get("type", "exe"),
+        "cmd": request.form.get("cmd", ""),
+        "uri_scheme": request.form.get("uri_scheme", ""),
+        "card_id": request.form.get("card_id", ""),
+        "bafy_topic": request.form.get("bafy_topic", "")
+    }
+    # 如果 old_name 存在且和新名字不同，则删除旧的启动项
+    if old_name and old_name != name and old_name in cfg:
+        del cfg[old_name]
+    if not name:
+        flash("名称不能为空")
+        return redirect(url_for("index"))
+    cfg[name] = info
+    save_config(cfg)
+    if request.form.get("run_after_save", "") == "1":
+        run_item(name, cfg=cfg)
+    flash(f"已保存启动项 {name}")
+    return redirect(url_for("index"))
+
+@app.route("/delete_item/<name>", methods=["POST"])
+def delete_item(name):
+    cfg = load_config()
+    if name in cfg:
+        cfg.pop(name)
+        save_config(cfg)
+        flash(f"已删除启动项 {name}")
+    return redirect(url_for("index"))
+
+@app.route("/run_item/<name>", methods=["POST"])
+def run_item_api(name):
+    value = request.form.get("brightness_value", None)
+    if value is not None and value.isdigit():
+        value = int(value)
     else:
-        win.show()
-    sys.exit(app.exec_())
+        value = None
+    ok, msg = run_item(name, brightness_value=value)
+    flash(msg)
+    return redirect(url_for("index"))
+
+@app.route("/save_settings", methods=["POST"])
+def save_settings():
+    cfg = load_config()
+    cfg["_adb_ip"] = request.form.get("adb_ip", "")
+    cfg["_serial_port"] = request.form.get("serial_port", "COM3")
+    cfg["_bafy_uid"] = request.form.get("bafy_uid", "")
+    cfg["_enable_card_reader"] = bool(request.form.get("enable_card_reader"))
+    cfg["_enable_adb_connect"] = bool(request.form.get("enable_adb_connect"))
+    cfg["_music_screen_on"] = bool(request.form.get("music_screen_on"))
+    cfg["_adb_screen_on"] = bool(request.form.get("adb_screen_on"))
+    cfg["_unlock_after_screen_on"] = bool(request.form.get("unlock_after_screen_on"))
+    cfg["_device_password"] = request.form.get("device_password", "")
+    save_config(cfg)
+    flash("已保存设置")
+    return redirect(url_for("index"))
+
+@app.route("/connect_adb", methods=["POST"])
+def connect_adb():
+    cfg = load_config()
+    ip = cfg.get("_adb_ip", "")
+    if ip:
+        cmd = f'adb connect {ip}'
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+            if result.returncode == 0:
+                flash("连接成功: " + (result.stdout or result.stderr))
+            else:
+                flash("连接失败: " + (result.stderr or result.stdout))
+        except Exception as e:
+            flash(f"连接设备异常: {e}")
+    else:
+        flash("请先设置ADB设备IP")
+    return redirect(url_for("index"))
+
+@app.route("/disconnect_adb", methods=["POST"])
+def disconnect_adb():
+    try:
+        result = subprocess.run("adb disconnect", shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+        if result.returncode == 0:
+            flash("断开成功: " + (result.stdout or result.stderr))
+        else:
+            flash("断开失败: " + (result.stderr or result.stdout))
+    except Exception as e:
+        flash(f"断开设备异常: {e}")
+    return redirect(url_for("index"))
+
+@app.route("/parse_music", methods=["POST"])
+def parse_music():
+    text = request.form.get("music_link", "").strip()
+    import re
+    match = re.search(r'\?(.*)$', text)
+    if not match:
+        result = "未找到 ? 后的内容"
+    else:
+        encoded = match.group(1).strip()
+        try:
+            decoded = urllib.parse.unquote(encoded)
+            decoded = decoded.replace('\\', '')
+            try:
+                obj = json.loads(decoded)
+            except Exception:
+                obj = eval(decoded)
+            result = json.dumps(obj, ensure_ascii=False, indent=4)
+        except Exception as e:
+            result = f"解析失败: {e}"
+    flash(result)
+    return redirect(url_for("index"))
+
+@app.route("/bafy/<cmd>", methods=["POST"])
+def bafy_control(cmd):
+    cfg = load_config()
+    flash("请在启动项里设置Topic后刷卡/云端触发")
+    return redirect(url_for("index"))
+
+PAGE_HTML = '''
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>SmartLink 启动器 Web</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+      :root{
+        --sky-50: #f2fbff;
+        --sky-100:#e6f8ff;
+        --sky-200:#cdeffb;
+        --sky-500:#1e90ff; /* 主天蓝色 */
+        --muted:#6c7886;
+        --card-bg:#ffffff;
+        --glass: rgba(255,255,255,0.75);
+        --text:#0f2333;
+        --header-grad: linear-gradient(90deg,var(--sky-500), #4fb3ff);
+      }
+
+      /* 深色模式变量（通过 body.dark-mode 启用） */
+      body.dark-mode {
+        --sky-50: #0b0f12;
+        --sky-100: #0f1417;
+        --sky-200: #12181b;
+        --sky-500: #9abcf7;
+        --muted: #98a0a6;
+        --card-bg: #0f1417;
+        --glass: rgba(255,255,255,0.02);
+        --text: #e6eef9;
+        --header-grad: linear-gradient(90deg,#0f1720,#0b1220);
+      }
+
+      body{
+        background: linear-gradient(180deg,var(--sky-50), #ffffff);
+        padding:22px 16px;
+        color:var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      }
+      body.dark-mode{
+        background: linear-gradient(180deg,var(--sky-100), var(--sky-200));
+      }
+
+      .app-header{
+        background: var(--header-grad);
+        color:#fff;
+        padding:12px 16px;
+        border-radius:12px;
+        box-shadow: 0 8px 30px rgba(30,144,255,0.08);
+        margin-bottom:16px;
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:12px;
+      }
+      .app-title{ font-size:1.15rem; font-weight:800; letter-spacing:0.4px; }
+      .app-sub{ font-size:0.82rem; opacity:0.95; margin-top:3px; }
+
+      .header-right { display:flex; gap:8px; align-items:center; }
+
+      .theme-btn{
+        background: rgba(255,255,255,0.12);
+        border: 1px solid rgba(255,255,255,0.12);
+        color: #fff;
+        padding:6px 10px;
+        border-radius:8px;
+        font-size:0.86rem;
+      }
+      .theme-btn:hover{ background: rgba(255,255,255,0.18); transform: translateY(-2px); }
+
+      .main-row { display:flex; gap:20px; align-items:flex-start; }
+      .main-left { flex:0 0 340px; min-width:300px; }
+      .main-right { flex:1 1 0; }
+
+      .card-panel{
+        background:linear-gradient(180deg,var(--card-bg), #fbfeff);
+        border-radius:12px;
+        padding:12px;
+        box-shadow: 0 6px 20px rgba(16,40,60,0.04);
+        margin-bottom:14px;
+        border: 1px solid rgba(30,144,255,0.04);
+      }
+      body.dark-mode .card-panel{
+        background: linear-gradient(180deg,var(--card-bg), rgba(255,255,255,0.02));
+        border-color: rgba(255,255,255,0.03);
+        box-shadow: none;
+      }
+
+      .section-title { font-weight:800; color:var(--sky-500); margin-bottom:8px; font-size:1.02rem; }
+
+      label{ font-weight:700; font-size:0.94rem; color:var(--text); }
+      .form-control, .form-select { border-radius:8px; background:transparent; color:var(--text); border:1px solid rgba(30,144,255,0.06); }
+      body.dark-mode .form-control, body.dark-mode .form-select { border:1px solid rgba(255,255,255,0.04); background: rgba(255,255,255,0.02); color:var(--text); }
+
+      /* 全局按钮 hover 特效（淡淡泛白光 + 轻微放大） */
+      .btn{
+        transition: transform .14s ease, box-shadow .18s ease;
+        position:relative;
+        overflow:visible;
+      }
+      .btn:hover{
+        transform: translateY(-2px) scale(1.01);
+        box-shadow: 0 8px 20px rgba(30,144,255,0.10);
+        z-index:3;
+      }
+      /* 泛白光更柔和、范围更小 */
+      .btn::after{
+        content: "";
+        position: absolute;
+        left: -30%;
+        top: -40%;
+        width: 20%;
+        height: 180%;
+        background: linear-gradient(120deg, rgba(255,255,255,0.0), rgba(255,255,255,0.14), rgba(255,255,255,0.0));
+        transform: skewX(-20deg) translateX(-100%);
+        transition: transform .6s ease;
+        pointer-events:none;
+        opacity:0.9;
+      }
+      .btn:hover::after{
+        transform: skewX(-20deg) translateX(220%);
+      }
+
+      .btn-primary{ background:var(--sky-500); border-color:var(--sky-500); box-shadow:none; color:#fff; }
+      .btn-connect { background:linear-gradient(90deg,#2b9bff,#1e90ff); border-color:transparent; color:#fff; }
+      .btn-outline-primary{ color:var(--sky-500); border-color:rgba(30,144,255,0.18); background:transparent; }
+
+      .item-grid { display:flex; flex-wrap:wrap; gap:16px; align-items:stretch; }
+      /* 固定每张卡片大小，保证一致性 */
+      .item-card { flex:1 1 280px; max-width:320px; min-width:260px; border-radius:12px; overflow:hidden; background:var(--card-bg); border:1px solid rgba(30,144,255,0.06); display:flex; }
+      .item-card .card-body {
+        padding:12px;
+        display:flex;
+        flex-direction:column;
+        justify-content:space-between;
+        width:100%;
+        min-height:220px; /* 统一高度 */
+        max-height:220px;
+      }
+      body.dark-mode .item-card { border-color: rgba(255,255,255,0.03); }
+
+      .item-card .content { flex:1 1 auto; overflow:hidden; display:flex; flex-direction:column; gap:8px; }
+
+      .actions { flex:0 0 auto; display:flex; justify-content:flex-end; gap:8px; align-items:center; margin-top:6px; }
+
+      .badge-type { background: linear-gradient(90deg,#eaf8ff,#dff3ff); color:var(--sky-500); font-weight:700; border-radius:8px; padding:6px 10px; font-size:0.86rem; }
+
+      /* 命令/秘密显示：限制行数，多余省略，hover 显示完整 title */
+      .cmd-preview{
+        color:#163d4f;
+        font-size:0.86rem;
+        line-height:1.18rem;
+        display:-webkit-box;
+        -webkit-line-clamp:4; /* 显示最多4行 */
+        -webkit-box-orient:vertical;
+        overflow:hidden;
+        text-overflow:ellipsis;
+        white-space:normal;
+        margin:2px 0;
+      }
+      body.dark-mode .cmd-preview { color:#dfefff; }
+
+      .small-label{ color:var(--muted); font-size:0.86rem; margin-bottom:6px; display:block; }
+
+      .tools-inline form{ display:inline-block; margin-right:8px; }
+
+      .alert-info{ background:#eef8ff; border-color:rgba(30,144,255,0.06); color:var(--sky-500); }
+      body.dark-mode .alert-info{ background: rgba(255,255,255,0.02); color:var(--muted); border-color: rgba(255,255,255,0.03); }
+
+      @media (max-width:1000px){
+        .main-row{ flex-direction:column; }
+        .main-left, .main-right{ min-width:100%; flex:1 1 auto; }
+        .item-card{ max-width:100%; min-width:auto; flex:1 1 100%; }
+        .item-card .card-body { min-height:180px; max-height:unset; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container-fluid">
+      <div class="app-header">
+        <div>
+          <div class="app-title">SmartLink 启动器 Web</div>
+          <div class="app-sub">在浏览器中管理启动项 · 天蓝 & 白色调</div>
+        </div>
+
+        <div class="header-right">
+          <div style="text-align:right; font-size:0.9rem; opacity:0.95; color:rgba(255,255,255,0.95);">Web 控制面板</div>
+          <button id="theme-toggle-btn" class="theme-btn" title="切换深色/浅色模式">切换主题</button>
+        </div>
+      </div>
+
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+        <div class="alert alert-info">{{ messages|join('<br>')|safe }}</div>
+        {% endif %}
+      {% endwith %}
+
+      <div class="main-row">
+        <div class="main-left">
+          <!-- 添加/编辑启动项 -->
+          <div class="card-panel">
+            <div class="section-title">添加 / 编辑 启动项</div>
+            <form method="POST" action="{{ url_for('save_item') }}" id="editForm">
+              <input type="hidden" name="old_name" id="old_name">
+              <div class="mb-2">
+                <label>名称</label>
+                <input type="text" class="form-control" name="name" id="item_name" required>
+              </div>
+              <div class="mb-2">
+                <label>类型</label>
+                <select class="form-select" name="type" id="item_type" onchange="toggleFields()">
+                  <option value="exe">exe</option>
+                  <option value="adb">adb</option>
+                  <option value="music">music</option>
+                  <option value="brightness">brightness</option>
+                </select>
+              </div>
+              <div class="mb-2">
+                <label>音乐平台协议（music类型填）</label>
+                <input type="text" class="form-control" name="uri_scheme" id="item_uri_scheme" placeholder="如 kugou://start.weixin">
+              </div>
+              <div class="mb-2">
+                <label>巴法云Topic</label>
+                <input type="text" class="form-control" name="bafy_topic" id="item_bafy_topic">
+              </div>
+              <div class="mb-2">
+                <label>路径 / 命令 / 音乐JSON</label>
+                <textarea class="form-control" name="cmd" id="item_cmd" rows="3"></textarea>
+              </div>
+              <div class="mb-2">
+                <label>绑定卡号</label>
+                <input type="text" class="form-control" name="card_id" id="item_card_id" placeholder="多个用英文逗号分隔">
+              </div>
+              <div class="form-check mb-2">
+                <input type="checkbox" name="run_after_save" value="1" id="run_after_save" class="form-check-input">
+                <label class="form-check-label" for="run_after_save">保存后立即运行</label>
+              </div>
+              <button class="btn btn-primary w-100" type="submit">保存启动项</button>
+            </form>
+          </div>
+
+          <!-- 全局设置 -->
+          <div class="card-panel">
+            <div class="section-title">全局设置</div>
+            <ul class="nav nav-tabs mb-3" id="settingsTabs" role="tablist">
+              <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="device-tab" data-bs-toggle="tab" data-bs-target="#device" type="button" role="tab">设备 / ADB</button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link" id="card-tab" data-bs-toggle="tab" data-bs-target="#card" type="button" role="tab">读卡器 / 巴法云</button>
+              </li>
+            </ul>
+            <form method="POST" action="{{ url_for('save_settings') }}">
+              <div class="tab-content" id="settingsTabsContent">
+                <div class="tab-pane fade show active" id="device" role="tabpanel">
+                  <div class="mb-2">
+                    <label>ADB设备IP</label>
+                    <input type="text" class="form-control" name="adb_ip" value="{{ settings.adb_ip }}">
+                  </div>
+                  <div class="form-check mb-2">
+                    <input type="checkbox" class="form-check-input" name="enable_adb_connect" {% if settings.enable_adb_connect %}checked{% endif %}>
+                    <label class="form-check-label">启动时ADB连接</label>
+                  </div>
+                  <div class="form-check mb-2">
+                    <input type="checkbox" class="form-check-input" name="adb_screen_on" {% if settings.adb_screen_on %}checked{% endif %}>
+                    <label class="form-check-label">ADB前亮屏</label>
+                  </div>
+                  <div class="form-check mb-2">
+                    <input type="checkbox" class="form-check-input" name="music_screen_on" {% if settings.music_screen_on %}checked{% endif %}>
+                    <label class="form-check-label">音乐前亮屏</label>
+                  </div>
+                  <div class="form-check mb-2">
+                    <input type="checkbox" class="form-check-input" name="unlock_after_screen_on" {% if settings.unlock_after_screen_on %}checked{% endif %}>
+                    <label class="form-check-label">亮屏后解锁</label>
+                  </div>
+                  <div class="mb-2">
+                    <label>设备解锁密码</label>
+                    <input type="password" class="form-control" name="device_password" value="{{ settings.device_password }}">
+                  </div>
+                  <div class="d-flex gap-2">
+                    <button class="btn btn-connect btn-sm flex-grow-1" type="button" id="connect-adb-btn">连接设备</button>
+                    <button class="btn btn-outline-primary btn-sm flex-grow-1" type="button" id="disconnect-adb-btn">断开连接</button>
+                  </div>
+                </div>
+
+                <div class="tab-pane fade" id="card" role="tabpanel">
+                  <div class="mb-2">
+                    <label>读卡器串口号</label>
+                    <input type="text" class="form-control" name="serial_port" value="{{ settings.serial_port }}">
+                  </div>
+                  <div class="form-check mb-2">
+                    <input type="checkbox" class="form-check-input" name="enable_card_reader" {% if settings.enable_card_reader %}checked{% endif %}>
+                    <label class="form-check-label">启用读卡器</label>
+                  </div>
+                  <div class="mb-2">
+                    <label>巴法云UID</label>
+                    <input type="text" class="form-control" name="bafy_uid" value="{{ settings.bafy_uid }}">
+                  </div>
+                </div>
+              </div>
+              <button class="btn btn-secondary w-100 mt-2" type="submit">保存设置</button>
+            </form>
+          </div>
+
+          <!-- 辅助工具 -->
+          <div class="card-panel">
+            <div class="section-title">工具</div>
+            <form method="POST" action="{{ url_for('parse_music') }}">
+              <label>音乐链接解析</label>
+              <input type="text" class="form-control mb-2" name="music_link" placeholder="输入音乐启动链接（如 kugou://start.weixin?...）">
+              <button class="btn btn-primary w-100" type="submit">解析链接</button>
+            </form>
+
+            <div class="mt-3">
+              <label class="d-block mb-2">巴法云云端按钮（请在启动项设置Topic后使用）</label>
+              <div class="tools-inline">
+                <form method="POST" action="{{ url_for('bafy_control', cmd='on') }}">
+                  <button class="btn btn-primary me-2" type="submit">发送开</button>
+                </form>
+                <form method="POST" action="{{ url_for('bafy_control', cmd='off') }}">
+                  <button class="btn btn-primary" type="submit">发送关</button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="main-right">
+          <div class="section-title mb-3">启动项列表</div>
+
+          <form class="d-flex mb-3 gap-2" method="GET" action="{{ url_for('index') }}">
+            <select name="type" class="form-select form-select-sm" style="width:150px;" onchange="this.form.submit()">
+              <option value="" {% if not query_type %}selected{% endif %}>全部类型</option>
+              {% for cat in categories %}
+                <option value="{{ cat }}" {% if query_type==cat %}selected{% endif %}>{{ cat }}</option>
+              {% endfor %}
+            </select>
+            <input type="text" name="kw" class="form-control form-control-sm" style="width:260px;" placeholder="名称或Topic查询" value="{{ keyword }}">
+            <button class="btn btn-outline-primary btn-sm" type="submit">查询</button>
+            <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('index') }}">重置</a>
+          </form>
+
+          <div class="item-grid">
+            {% if len(items)==0 %}
+              <div class="alert alert-warning w-100">没有匹配启动项。</div>
+            {% endif %}
+            {% for idx, (name, info) in enumerate(items) %}
+              <div class="item-card">
+                <div class="card-body">
+                  <div class="content">
+                    <div class="d-flex justify-content-between align-items-start">
+                      <div style="min-width:0;">
+                        <div style="display:flex; gap:8px; align-items:center;">
+                          <span class="badge-type">{{ info.type }}</span>
+                          <div style="font-weight:800; font-size:1rem; color:var(--text); max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ name }}">{{ name }}</div>
+                        </div>
+                        <div class="small-label mt-2">协议: <span class="text-primary">{{ info.uri_scheme }}</span></div>
+                      </div>
+                      <div style="text-align:right; min-width:110px;">
+                        <div class="small-label">卡号: <span class="text-success">{{ info.card_id }}</span></div>
+                        <div class="small-label">Topic: <span class="text-success" title="{{ info.bafy_topic }}">{{ info.bafy_topic }}</span></div>
+                      </div>
+                    </div>
+
+                    <div class="mt-2">
+                      <div class="small-label">命令/JSON:</div>
+                      <div class="cmd-preview" title="{{ info.cmd|e }}">{{ info.cmd }}</div>
+                    </div>
+                  </div>
+
+                  <div class="actions">
+                    <form method="POST" action="{{ url_for('run_item_api', name=name) }}" style="display:inline-flex; align-items:center;">
+                      {% if info.type == "brightness" %}
+                        <input type="number" name="brightness_value" min="0" max="100" value="50" class="form-control form-control-sm me-2" style="width:90px;" required>
+                      {% endif %}
+                      <button class="btn btn-primary btn-sm" type="submit">运行</button>
+                    </form>
+
+                    <button class="btn btn-primary btn-sm edit-btn" type="button" data-name="{{ name }}">编辑</button>
+
+                    <form method="POST" action="{{ url_for('delete_item', name=name) }}" style="display:inline;" onsubmit="return confirm('确定删除 {{ name }}?');">
+                      <button class="btn btn-outline-danger btn-sm" type="submit">删除</button>
+                    </form>
+                  </div>
+
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="text-center mt-4" style="color:var(--muted);">SmartLink Web © 2025 mryuzhu</div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+      // 主题切换（深色/浅色） — 右上按钮
+      (function(){
+        var btn = document.getElementById('theme-toggle-btn');
+        function applyTheme(t){
+          if(t === 'dark'){ document.body.classList.add('dark-mode'); btn.textContent = '切换到浅色'; }
+          else { document.body.classList.remove('dark-mode'); btn.textContent = '切换到深色'; }
+        }
+        var saved = localStorage.getItem('smartlink_theme') || 'light';
+        applyTheme(saved);
+        btn.addEventListener('click', function(){
+          var cur = document.body.classList.contains('dark-mode') ? 'dark' : 'light';
+          var next = cur === 'dark' ? 'light' : 'dark';
+          localStorage.setItem('smartlink_theme', next);
+          applyTheme(next);
+        });
+      })();
+
+      // 编辑按钮事件：填充左侧表单（未改动逻辑）
+      document.querySelectorAll(".edit-btn").forEach(function(btn){
+        btn.onclick = function(){
+          var name = btn.getAttribute("data-name");
+          var map = {{ item_json_map|tojson }};
+          if(map[name]){
+            var info = JSON.parse(map[name]);
+            document.getElementById("item_name").value = name;
+            document.getElementById("item_type").value = info.type || "exe";
+            document.getElementById("item_uri_scheme").value = info.uri_scheme || "";
+            document.getElementById("item_cmd").value = info.cmd || "";
+            document.getElementById("item_card_id").value = info.card_id || "";
+            document.getElementById("item_bafy_topic").value = info.bafy_topic || "";
+            document.getElementById("item_name").focus();
+            toggleFields();
+          }
+        }
+      });
+      function toggleFields() {
+        var type = document.getElementById("item_type").value;
+        document.getElementById("item_uri_scheme").disabled = type !== "music";
+      }
+      document.getElementById("item_type").addEventListener("change", toggleFields);
+      toggleFields();
+      if(window.location.hash=="#edit"){document.getElementById("item_name").focus();}
+
+      // 连接设备与断开设备（保持原有异步接口）
+      document.getElementById("connect-adb-btn")?.addEventListener("click", function(){
+        var ip = document.querySelector("input[name='adb_ip']").value;
+        fetch("/adb_action/connect", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ip: ip })
+        }).then(r => r.json()).then(data => alert(data.msg));
+      });
+      document.getElementById("disconnect-adb-btn")?.addEventListener("click", function(){
+        fetch("/adb_action/disconnect", { method: "POST" }).then(r => r.json()).then(data => alert(data.msg));
+      });
+    </script>
+  </body>
+</html>
+'''
+
+# 新增：ADB连接/断开接口
+@app.route("/adb_action/<action>", methods=["POST"])
+def adb_action(action):
+    msg = ""
+    if action == "connect":
+        data = request.get_json(force=True)
+        ip = data.get("ip", "")
+        if ip:
+            try:
+                result = subprocess.run(f"adb connect {ip}", shell=True, capture_output=True, text=True)
+                msg = result.stdout.strip() or result.stderr.strip()
+                if result.returncode == 0:
+                    msg = "连接成功：" + msg
+                else:
+                    msg = "连接失败：" + msg
+            except Exception as e:
+                msg = f"错误：{e}"
+        else:
+            msg = "请输入设备IP"
+    elif action == "disconnect":
+        try:
+            result = subprocess.run("adb disconnect", shell=True, capture_output=True, text=True)
+            msg = result.stdout.strip() or result.stderr.strip()
+            if result.returncode == 0:
+                msg = "已断开：" + msg
+            else:
+                msg = "断开失败：" + msg
+        except Exception as e:
+            msg = f"错误：{e}"
+    else:
+        msg = "未知操作"
+    return jsonify({ "msg": msg })
+
+def connect_device_if_needed():
+    cfg = load_config()
+    if cfg.get("_enable_adb_connect", True):
+        ip = cfg.get("_adb_ip", "")
+        if ip:
+            cmd = f'adb connect {ip}'
+            try:
+                subprocess.run(cmd, shell=True)
+            except Exception as e:
+                print("ADB连接失败:", e)
+
+# 新增：帮助文本
+HELP_TEXT = """SmartLink Web 启动器
+用法:
+    SmartLink.exe                启动并自动打开浏览器
+    SmartLink.exe --no-browser   后台运行，不自动打开浏览器
+    SmartLink.exe -help          显示本帮助文本
+"""
+
+# 新增：托盘图标生成函数
+def get_tray_icon():
+    icon_path = os.path.join(os.path.dirname(sys.argv[0]), "icon.ico")
+    if os.path.exists(icon_path):
+        try:
+            return Image.open(icon_path)
+        except Exception:
+            pass
+    # 自动生成蓝底白字“SL”图标
+    img = Image.new("RGBA", (32, 32), (30, 144, 255, 255))  # 天蓝色底
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("arial.ttf", 18)
+    except Exception:
+        font = ImageFont.load_default()
+    text = "SL"
+    # 修正：用 textbbox 获取宽高
+    bbox = draw.textbbox((0, 0), text, font=font)
+    w = bbox[2] - bbox[0]
+    h = bbox[3] - bbox[1]
+    draw.text(((32-w)//2, (32-h)//2), text, font=font, fill=(255,255,255,255))
+    return img
+
+# 新增：托盘主逻辑
+class TrayManager:
+    def __init__(self, app_quit_callback):
+        self.icon = None
+        self.thread = None
+        self.app_quit_callback = app_quit_callback
+        self._stop_event = threading.Event()
+
+    def _on_open(self, icon, item):
+        webbrowser.open("http://127.0.0.1:5000")
+
+    def _on_exit(self, icon, item):
+        self._stop_event.set()
+        if self.icon:
+            self.icon.stop()
+        self.app_quit_callback()
+
+    def run(self):
+        if pystray is None or Image is None:
+            print("未安装 pystray/pillow，托盘功能不可用")
+            return
+        image = get_tray_icon()
+        menu = pystray.Menu(
+            pystray.MenuItem("打开 Web 设置", self._on_open),
+            pystray.MenuItem("退出程序", self._on_exit)
+        )
+        self.icon = pystray.Icon("SmartLink", image, "SmartLink 启动器", menu)
+        self.icon.run()
+
+    def start(self):
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        if self.icon:
+            self.icon.stop()
+
+# 新增：安全退出逻辑
+def safe_exit():
+    # 关闭 Flask（略，Flask主线程退出即可）
+    # 关闭所有后台线程
+    os._exit(0)
+
+def run_flask():
+    app.run(host="127.0.0.1", port=5000, threaded=True)
+
+if __name__ == "__main__":
+    # 参数解析
+    args = sys.argv[1:]
+    if any(a in args for a in ["-help", "--help"]):
+        print(HELP_TEXT)
+        sys.exit(0)
+
+    no_browser = any(a in args for a in ["--no-browser", "-no-browser"])
+
+    cfg = load_config()
+    cfg = default_config(cfg)
+    connect_device_if_needed()
+    start_card_reader_thread(load_config, run_item)
+    start_bafy_mqtt_listener(load_config, run_item)
+
+    # 启动 Flask 后台线程
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    # 自动打开浏览器（除非 --no-browser 参数）
+    if not no_browser:
+        threading.Timer(1.0, lambda: webbrowser.open("http://127.0.0.1:5000")).start()
+
+    # 托盘必须在主线程运行
+    tray_mgr = TrayManager(app_quit_callback=safe_exit)
+    tray_mgr.run()  # 不用 .start()，直接主线程运行
