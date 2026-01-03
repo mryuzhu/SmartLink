@@ -33,6 +33,8 @@ except ImportError:
     mqtt = None
 
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), "launcher_config.json")
+DEFAULT_HOST = os.environ.get("SMARTLINK_HOST", "0.0.0.0")
+DEFAULT_PORT = int(os.environ.get("SMARTLINK_PORT", "5000"))
 
 MUSIC_PLATFORMS = {
     "网易云音乐": "ncm://start.weixin",
@@ -971,9 +973,11 @@ def connect_device_if_needed():
 # 新增：帮助文本
 HELP_TEXT = """SmartLink Web 启动器
 用法:
-    SmartLink.exe                启动并自动打开浏览器
-    SmartLink.exe --no-browser   后台运行，不自动打开浏览器
-    SmartLink.exe -help          显示本帮助文本
+    SmartLink.exe                          启动并自动打开浏览器
+    SmartLink.exe --no-browser             后台运行，不自动打开浏览器
+    SmartLink.exe --no-tray                禁用托盘（容器/无图形环境推荐）
+    SmartLink.exe --host 0.0.0.0 --port 5000  指定 Web 监听地址与端口（默认读取环境变量 SMARTLINK_HOST/SMARTLINK_PORT）
+    SmartLink.exe -help                    显示本帮助文本
 """
 
 # 新增：托盘图标生成函数
@@ -1043,17 +1047,38 @@ def safe_exit():
     # 关闭所有后台线程
     os._exit(0)
 
-def run_flask():
-    app.run(host="127.0.0.1", port=5000, threaded=True)
+def run_flask(host, port):
+    app.run(host=host, port=port, threaded=True)
 
 if __name__ == "__main__":
+    host = DEFAULT_HOST
+    port = DEFAULT_PORT
+    no_browser = False
+    no_tray = False
+
     # 参数解析
     args = sys.argv[1:]
     if any(a in args for a in ["-help", "--help"]):
         print(HELP_TEXT)
         sys.exit(0)
 
-    no_browser = any(a in args for a in ["--no-browser", "-no-browser"])
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ["--no-browser", "-no-browser"]:
+            no_browser = True
+        elif arg == "--no-tray":
+            no_tray = True
+        elif arg == "--host" and i + 1 < len(args):
+            host = args[i + 1]
+            i += 1
+        elif arg == "--port" and i + 1 < len(args):
+            try:
+                port = int(args[i + 1])
+            except ValueError:
+                pass
+            i += 1
+        i += 1
 
     cfg = load_config()
     cfg = default_config(cfg)
@@ -1061,14 +1086,22 @@ if __name__ == "__main__":
     start_card_reader_thread(load_config, run_item)
     start_bafy_mqtt_listener(load_config, run_item)
 
-    # 启动 Flask 后台线程
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
+    browser_host = "127.0.0.1" if host in ["0.0.0.0", "0.0.0.0/0", ""] else host
+    base_url = f"http://{browser_host}:{port}"
 
-    # 自动打开浏览器（除非 --no-browser 参数）
-    if not no_browser:
-        threading.Timer(1.0, lambda: webbrowser.open("http://127.0.0.1:5000")).start()
+    tray_available = (not no_tray) and (pystray is not None and Image is not None)
 
-    # 托盘必须在主线程运行
-    tray_mgr = TrayManager(app_quit_callback=safe_exit)
-    tray_mgr.run()  # 不用 .start()，直接主线程运行
+    if tray_available:
+        flask_thread = threading.Thread(target=run_flask, args=(host, port), daemon=True)
+        flask_thread.start()
+        if not no_browser:
+            threading.Timer(1.0, lambda: webbrowser.open(base_url)).start()
+        tray_mgr = TrayManager(app_quit_callback=safe_exit)
+        tray_mgr.run()  # 不用 .start()，直接主线程运行
+    else:
+        if pystray is None or Image is None:
+            print("未安装 pystray/pillow 或无图形环境，托盘功能已禁用")
+        if not no_browser:
+            threading.Timer(1.0, lambda: webbrowser.open(base_url)).start()
+        # 直接前台运行 Flask，适合容器环境
+        run_flask(host, port)
