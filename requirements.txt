@@ -1,0 +1,5 @@
+flask
+pyserial
+paho-mqtt
+pystray
+pillow
