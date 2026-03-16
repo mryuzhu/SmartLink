@@ -111,6 +111,7 @@ class AppSettings:
     device_password: str = ""
     tray_enabled: bool = True
     auto_open_browser: bool = True
+    show_windows_info_dialog: bool = False
     startup_enabled: bool = False
     ssh_host: str = ""
     ssh_user: str = ""
@@ -137,6 +138,7 @@ class AppSettings:
             device_password=str(data.get("device_password", "") or ""),
             tray_enabled=bool(data.get("tray_enabled", True)),
             auto_open_browser=bool(data.get("auto_open_browser", True)),
+            show_windows_info_dialog=bool(data.get("show_windows_info_dialog", False)),
             startup_enabled=bool(data.get("startup_enabled", False)),
             ssh_host=str(data.get("ssh_host", "") or ""),
             ssh_user=str(data.get("ssh_user", "") or ""),
@@ -162,6 +164,7 @@ class AppSettings:
             "device_password": self.device_password,
             "tray_enabled": self.tray_enabled,
             "auto_open_browser": self.auto_open_browser,
+            "show_windows_info_dialog": self.show_windows_info_dialog,
             "startup_enabled": self.startup_enabled,
             "ssh_host": self.ssh_host,
             "ssh_user": self.ssh_user,

@@ -34,6 +34,7 @@ def _settings_from_form() -> dict:
         "device_password": form.get("device_password", ""),
         "tray_enabled": bool(form.get("tray_enabled")),
         "auto_open_browser": bool(form.get("auto_open_browser")),
+        "show_windows_info_dialog": bool(form.get("show_windows_info_dialog")),
         "startup_enabled": bool(form.get("startup_enabled")),
         "ssh_host": form.get("ssh_host", "").strip(),
         "ssh_user": form.get("ssh_user", "").strip(),

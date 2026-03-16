@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import threading
 import time
@@ -11,6 +12,34 @@ from werkzeug.serving import make_server
 from smartlink import create_app
 from smartlink.services.network import get_lan_addresses
 from smartlink.services.tray import TrayManager, tray_available
+
+
+def resolve_access_host(listen_host: str) -> str:
+    """根据监听地址生成浏览器访问地址。"""
+    normalized = (listen_host or "").strip()
+    if normalized in {"", "0.0.0.0", "::"}:  # noqa: S104 - 这里仅比较配置，不做实际绑定
+        return get_lan_addresses()[-1]
+    return normalized
+
+
+def show_error_dialog(title: str, message: str) -> None:
+    """Windows 无控制台模式下显示关键错误。"""
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)
+    except Exception:
+        return
+
+
+def show_info_dialog(title: str, message: str) -> None:
+    """Windows 无控制台模式下显示启动提示。"""
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.user32.MessageBoxW(None, message, title, 0x40)
+    except Exception:
+        return
 
 
 class ServerThread(threading.Thread):
@@ -48,9 +77,15 @@ def main() -> int:
 
     host = settings.listen_host
     port = settings.port
-    lan_host = get_lan_addresses()[-1]
-    dashboard_url = f"http://{lan_host}:{port}/"
-    mobile_url = f"http://{lan_host}:{port}/mobile"
+    access_host = resolve_access_host(host)
+    dashboard_url = f"http://{access_host}:{port}/"
+    mobile_url = f"http://{access_host}:{port}/mobile"
+    startup_message = (
+        "SmartLink 已启动。\n\n"
+        f"控制台: {dashboard_url}\n"
+        f"手机页: {mobile_url}\n\n"
+        "当前使用了 --no-browser，程序不会自动打开浏览器。"
+    )
 
     def maybe_open_browser() -> None:
         if not args.no_browser and settings.auto_open_browser:
@@ -58,10 +93,16 @@ def main() -> int:
             webbrowser.open(dashboard_url)
 
     threading.Thread(target=maybe_open_browser, daemon=True).start()
+    state.logger.info("startup host=%s port=%s dashboard=%s", host, port, dashboard_url)
 
     if settings.tray_enabled and not args.disable_tray and tray_available():
         server = ServerThread(app, host, port)
         server.start()
+        if args.no_browser and settings.show_windows_info_dialog:
+            threading.Thread(
+                target=lambda: (time.sleep(1.0), show_info_dialog("SmartLink", startup_message)),
+                daemon=True,
+            ).start()
 
         def _shutdown() -> None:
             state.integration_manager.stop()
@@ -73,11 +114,21 @@ def main() -> int:
         return 0
 
     try:
+        if args.no_browser and settings.show_windows_info_dialog:
+            threading.Thread(
+                target=lambda: (time.sleep(1.0), show_info_dialog("SmartLink", startup_message)),
+                daemon=True,
+            ).start()
         app.run(host=host, port=port, threaded=True)
     except OSError as exc:
-        state.logger.exception("服务启动失败: %s", exc)
+        state.logger.exception("service startup failed: %s", exc)
+        show_error_dialog("SmartLink 启动失败", f"服务启动失败：{exc}")
         print(f"服务启动失败: {exc}")
         return 1
+    except Exception as exc:
+        state.logger.exception("service runtime error: %s", exc)
+        show_error_dialog("SmartLink 运行异常", f"程序运行异常：{exc}")
+        raise
     finally:
         state.integration_manager.stop()
         state.action_service.shutdown()

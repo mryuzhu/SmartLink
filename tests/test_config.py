@@ -7,10 +7,16 @@ from smartlink.config import ConfigManager
 from smartlink.models import ActionConfig
 
 
-def test_config_read_write_roundtrip(tmp_path: Path):
+def test_config_read_write_roundtrip(tmp_path: Path) -> None:
     config_path = tmp_path / "launcher_config.json"
     manager = ConfigManager(config_path)
-    settings = manager.update_settings({"api_token": "abc123", "adb_ip": "192.168.1.8:5555"})
+    settings = manager.update_settings(
+        {
+            "api_token": "abc123",
+            "adb_ip": "192.168.1.8:5555",
+            "show_windows_info_dialog": True,
+        }
+    )
     manager.upsert_action(
         ActionConfig(
             name="打开画图",
@@ -26,10 +32,11 @@ def test_config_read_write_roundtrip(tmp_path: Path):
 
     assert settings.api_token == "abc123"
     assert reloaded.get_settings().adb_ip == "192.168.1.8:5555"
+    assert reloaded.get_settings().show_windows_info_dialog is True
     assert any(action.name == "打开画图" for action in actions)
 
 
-def test_legacy_config_is_migrated(tmp_path: Path):
+def test_legacy_config_is_migrated(tmp_path: Path) -> None:
     config_path = tmp_path / "legacy.json"
     legacy_payload = {
         "_adb_ip": "192.168.1.6:5555",
