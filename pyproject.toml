@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smartlink-local"
+version = "0.2.0"
+description = "SmartLink LAN control console with Flask, ADB, MQTT, and iOS shortcut support."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "Flask>=3.0,<4.0",
+    "paho-mqtt>=2.1,<3.0",
+    "pyserial>=3.5,<4.0",
+    "pystray>=0.19,<1.0",
+    "Pillow>=10.3,<12.0",
+    "qrcode>=8.2,<9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9.0",
+    "ruff>=0.11.0,<0.12.0",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["smartlink*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "S"]
+ignore = ["E501", "S101", "S105", "S603", "S607"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

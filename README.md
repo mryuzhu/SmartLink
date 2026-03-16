@@ -1,79 +1,109 @@
-# 🚀 SmartLink  
-> **一句话总结：让小爱同学一句话控制 PC & Android 的超轻量控制器**  
-> 纯 Python 单文件，仅依赖 `adb`，作者 × GPT-4o.1 联合出品。
-由于是小白做的一开始只是想做给自己用的，所以UI十分简陋，基本是没有什么UI，但是该有的功能都有了，如果你们实在看不下去的话也可以自己去拿代码做些优化什么的。
----
+# SmartLink
 
-## 📌 一句话指令示例
-| 语音指令 | 执行结果 |
-|---|---|
-| “小爱同学，打开 Photoshop” | 电脑立即启动 Photoshop |
-| “小爱同学，打开平板抖音” | 平板秒开抖音 |
-| “小爱同学，关闭电脑” | PC 执行关机脚本 |
-| “小爱同学，亮度 30” | 电脑屏幕亮度调到 30% |
+SmartLink 是一个面向 Windows 主机的局域网控制工具，保留了原项目的 ADB、MQTT、串口读卡和托盘能力，并补齐了更可维护的 Flask 控制台、iPhone 快捷指令 HTTP API、安全鉴权、日志、配置导入导出和移动端按钮页。
 
----
+## 主要能力
 
-## ✨ 核心特性一览
-| 功能模块 | 触发方式 | 备注 |
-|---|---|---|
-| **ADB 多设备** | 按钮 / NFC / 语音 | 启动 App、播放音乐、广播 |
-| **PC 控制** | 按钮 / NFC / 语音 | EXE、BAT、调节亮度、关机 |
-| **巴法云 MQTT** | 001 插座 / 002 调光 | 小爱→巴法云→SmartLink |
-| **NFC 读卡** | 外置读卡器 | UID 绑定任意命令（实验） |
-| **托盘静默** | `--no-browser` 启动 | 无窗口，后台托盘，开机自启 |
+- 启动项管理：支持搜索、分类筛选、新建、编辑、删除、一键执行、批量删除、批量导出。
+- iOS 局域网控制：内置 `/api/health`、`/api/actions`、`/api/run`、`/api/system/*` 接口，支持快捷指令和 Webhook。
+- 安全增强：Token 鉴权、局域网网段 / IP 白名单、动作白名单、统一 JSON 响应、日志脱敏。
+- 稳定性增强：配置迁移、滚动日志、最近请求记录、最近使用动作、后台执行队列。
+- 兼容原能力：ADB 设备连接、巴法云 MQTT 触发、串口读卡触发、Windows 托盘、开机自启。
+- 移动体验：`/mobile` 页面可直接在 iPhone Safari 收藏后点击控制。
 
----
+## 目录结构
 
-## 🛠️ 三步上手
-
-### 1️⃣ 环境检查
-```bash
-adb version          # 确认已安装并加入 PATH
-# 注册巴法云账号 → 记住 UID
+```text
+E:\my codex
+├─ SmartLink.py
+├─ smartlink
+│  ├─ routes
+│  ├─ services
+│  ├─ static
+│  └─ templates
+├─ config
+├─ logs
+└─ tests
 ```
 
+## 运行环境
 
-### 2️⃣ 下载与启动
-### 3️⃣ 配置向导
+- Python 3.11+
+- Windows 主机优先
+- 已安装 `adb` 并加入 PATH（如果需要 Android 控制）
 
-```bash
-| 配置项     | 示例                                                                            | 提示                 |
-| ------- | ----------------------------------------------------------------------------- | ------------------ |
-| 巴法云 私钥 | `123456`                                                                      | 个人中心复制             |
-| MQTT 主题 | `home001` `home002`                                                         | 必须以 `001`/`002` 结尾 |
-| ADB 地址  | `192.168.1.100:5555`                                                          | 建议路由器 DHCP 静态绑定    |
-| 按钮命令    | com.ss.android.ugc.aweme/.splash.SplashActivity` | PC 或 Android 任意命令  |
-适用于 Android 11 及以上版本
+## 安装
 
-启用无线调试： 在设备上启用开发者选项。 打开“无线调试”选项，并允许在当前网络上进行无线调试。
-
-配对设备： 在设备上选择“使用配对码配对设备”，记下显示的配对码、IP 地址和端口号。 在电脑终端运行以下命令： adb pair <ip_address>:<port> 输入配对码后，系统会提示配对成功。
-
+```powershell
+pip install -e .[dev]
 ```
----
-## 🚀小爱同学接入流程  
-巴法云 → 添加设备 → MQTT 设备
-主题填 home/001（开关）、home/002（亮度 0-100）
-米家 → 我的 → 其他平台 → 巴法云 → 绑定账号
-对小爱说：
-“打开插座 001” → 执行 PC 关机/启动 App
-“把灯调到 50” → 屏幕亮度 50%
-具体名称可在巴法云内自定义，或者使用小爱训练自定义命令。
 
----
-## 控制安卓设备放歌
-选择adb（酷狗选择music）
-命令格式
-adb shell am start -a android.intent.action.VIEW -d <url>
-url获取参考https://blog.csdn.net/Claffic/article/details/129218691或者其他NFC音乐相册制作
+## 启动
 
-## 酷狗特殊
-酷狗音乐需获取哈希
-参考教程https://www.cnblogs.com/apresunday/p/8448126.html
-格式示例
-
-{ "cmd": 212, "jsonStr": { "bitrate": 128, "duration": 239, "extname": "mp3", "filename": "G.E.M. 邓紫棋 - 喜欢你", "hash": "cff4d61fa1318100ce18a88ebb52e335" } }
-
-或者app NFC writer 自带音乐解析 解析后的链接粘贴到启动器里面的解析器里，将解析后的内容粘贴进命令，选择music（酷狗的链接太复杂了没办法）
+```powershell
+python SmartLink.py
 ```
+
+常用启动参数：
+
+```powershell
+python SmartLink.py --no-browser
+python SmartLink.py --disable-tray
+python SmartLink.py --config E:\my codex\config\launcher_config.json
+```
+
+启动后默认访问：
+
+- 控制台：[http://127.0.0.1:5000/](http://127.0.0.1:5000/)
+- 手机按钮页：[http://127.0.0.1:5000/mobile](http://127.0.0.1:5000/mobile)
+
+## 测试与检查
+
+```powershell
+ruff check .
+pytest
+```
+
+## iPhone 接入
+
+完整步骤见 [SHORTCUTS_GUIDE.md](SHORTCUTS_GUIDE.md)。
+
+快捷说明：
+
+1. 打开控制台，进入 “iOS 快捷指令接口说明”。
+2. 复制 `API Base` 和 `X-SmartLink-Token`。
+3. 在 iPhone 快捷指令里使用“获取 URL 内容”。
+4. 方法选择 `POST`，Header 填入 `X-SmartLink-Token`。
+5. URL 使用 `http://你的局域网IP:端口/api/run/动作名` 或系统接口。
+
+## 配置文件
+
+默认配置文件：
+
+```text
+E:\my codex\config\launcher_config.json
+```
+
+支持从旧版 `%USERPROFILE%\launcher_config.json` 自动迁移。
+
+你也可以通过环境变量覆盖：
+
+- `SMARTLINK_CONFIG_FILE`
+- `SMARTLINK_HOST`
+- `SMARTLINK_PORT`
+- `SMARTLINK_API_TOKEN`
+
+## 音量接口说明
+
+`POST /api/system/volume` 已实现接口和参数校验。
+
+- 如果系统安装了 `nircmd.exe`，会直接调用设置系统音量。
+- 如果未安装，接口会返回 `volume_not_supported`，不会影响其他功能。
+
+## SSH 说明
+
+HTTP API 是主路径，SSH 只是可选增强。
+
+- 你可以在控制台填写 SSH 主机、用户和端口。
+- 控制台会自动生成一条 iOS 快捷指令可参考的 SSH 命令模板。
+- 即使不配置 SSH，iPhone 快捷指令链路也可以完整工作。

@@ -1,0 +1,46 @@
+{
+  "version": 2,
+  "settings": {
+    "listen_host": "127.0.0.1",
+    "port": 5000,
+    "api_token": "replace-with-your-token",
+    "allowed_networks": ["127.0.0.1/32", "192.168.0.0/16"],
+    "allowed_ips": [],
+    "request_timeout": 15,
+    "adb_ip": "192.168.1.8:5555",
+    "serial_port": "COM3",
+    "bafy_uid": "",
+    "enable_card_reader": false,
+    "enable_adb_connect": false,
+    "music_screen_on": true,
+    "adb_screen_on": true,
+    "unlock_after_screen_on": false,
+    "device_password": "",
+    "tray_enabled": true,
+    "auto_open_browser": true,
+    "startup_enabled": false,
+    "ssh_host": "",
+    "ssh_user": "",
+    "ssh_port": 22
+  },
+  "actions": [
+    {
+      "name": "打开记事本",
+      "type": "exe",
+      "cmd": "notepad.exe",
+      "uri_scheme": "",
+      "card_ids": [],
+      "bafy_topic": "",
+      "category": "办公",
+      "tags": ["常用"],
+      "favorite": true,
+      "allow_api": true,
+      "enabled": true,
+      "description": "打开 Windows 记事本",
+      "run_count": 0,
+      "last_run_at": "",
+      "last_result": null,
+      "last_message": ""
+    }
+  ]
+}

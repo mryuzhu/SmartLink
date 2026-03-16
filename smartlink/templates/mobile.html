@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}SmartLink{% endblock %}
+{% block body_class %}mobile-page{% endblock %}
+
+{% block content %}
+<div class="mobile-shell">
+  <header class="mobile-header">
+    <p class="eyebrow">Safari / iPhone 收藏即用</p>
+    <h1>SmartLink</h1>
+    <p>这是简化版移动控制台，支持动作列表、一键执行和亮度调整，适合手机浏览器直接使用。</p>
+  </header>
+
+  <section class="mobile-token card">
+    <label class="stack-field">
+      <span>API Token</span>
+      <div class="token-input-group">
+        <input class="input" id="mobile-token-input" type="password" placeholder="输入完整 Token（页面默认不保存）" />
+        <button class="toggle-text-button" type="button" onclick="toggleTokenVisibility('mobile-token-input', 'mobile-token-toggle-text')">
+          <span id="mobile-token-toggle-text">显示</span>
+        </button>
+      </div>
+    </label>
+    <small>当前页面只显示掩码：{{ token_hint or "未配置" }}</small>
+  </section>
+
+  <section class="mobile-actions">
+    {% for action in actions %}
+    <button class="mobile-button" type="button" data-mobile-action="{{ action.name }}" data-loading-text="执行中...">{{ action.name }}</button>
+    {% endfor %}
+    <button class="mobile-button secondary" type="button" data-mobile-system="lock" data-loading-text="执行中...">锁定电脑</button>
+    <button class="mobile-button secondary" type="button" data-mobile-system="restart" data-loading-text="执行中...">重启电脑</button>
+    <button class="mobile-button danger" type="button" data-mobile-system="shutdown" data-loading-text="执行中...">关闭电脑</button>
+  </section>
+
+  <section class="card mobile-inline-form">
+    <h2>调节亮度</h2>
+    <label class="stack-field">
+      <span>亮度值</span>
+      <div class="slider-row">
+        <input type="range" min="0" max="100" value="50" id="mobile-brightness" />
+        <span id="mobile-brightness-value">50</span>
+      </div>
+    </label>
+    <button class="button button-primary button-compact" type="button" id="mobile-brightness-button" data-loading-text="设置中...">设置亮度</button>
+  </section>
+
+  <section class="card mobile-tips">
+    <h2>移动端说明</h2>
+    <div class="scroll-wrap">
+      <p>`/mobile` 已存在并保持可用。如果需要局域网设备访问，请把监听地址配置成 `0.0.0.0`，否则只能本机访问。</p>
+    </div>
+    <a class="button button-secondary button-compact" href="{{ guide_url }}">返回桌面控制台</a>
+  </section>
+</div>
+<div id="mobile-api-base" data-api-base="{{ api_base }}"></div>
+{% endblock %}

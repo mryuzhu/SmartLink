@@ -1,0 +1,520 @@
+{% extends "base.html" %}
+
+{% block title %}SmartLink{% endblock %}
+
+{% block content %}
+<div class="shell">
+  <header class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">LAN Control Console / Shortcut Ready</p>
+      <h1>SmartLink</h1>
+      <p class="hero-text">局域网控制、ADB、日志与移动端入口都保留在现有系统上，当前重点优化布局、按钮和动作卡片交互。</p>
+      <div class="hero-actions">
+        <a class="button button-primary button-compact" href="#actions">管理动作</a>
+        <a class="button button-secondary button-compact" href="{{ mobile_url }}" target="_blank" rel="noreferrer">打开手机页</a>
+        <a class="button button-secondary button-compact" href="{{ url_for('web.export_config') }}">导出配置</a>
+        <a class="button button-secondary button-compact" href="https://cloud.bemfa.com/tcp/devicemqtt.html" target="_blank" rel="noreferrer">巴法云 MQTT</a>
+      </div>
+    </div>
+    <div class="hero-side">
+      <div class="address-card-grid">
+        <div class="address-card">
+          <span class="address-label">监听地址</span>
+          <code>{{ settings.listen_host }}:{{ settings.port }}</code>
+        </div>
+        <div class="address-card">
+          <span class="address-label">局域网地址</span>
+          <code>{{ lan_addresses|join(", ") }}</code>
+        </div>
+      </div>
+      <div class="token-panel">
+        <label class="stack-field">
+          <span>API Token</span>
+          <div class="token-input-group">
+            <input class="input" id="dashboard-token-input" type="password" value="{{ settings.api_token }}" readonly />
+            <button class="toggle-text-button" type="button" onclick="toggleTokenVisibility('dashboard-token-input', 'token-toggle-text')">
+              <span id="token-toggle-text">显示</span>
+            </button>
+          </div>
+        </label>
+      </div>
+      <div class="badge-row">
+        <span class="badge badge-good">动作 {{ all_actions|length }}</span>
+        <span class="badge {{ 'badge-good' if adb_status.connected else 'badge-muted' }}">ADB {{ '已连接' if adb_status.connected else '未连接' }}</span>
+        <span class="badge {{ 'badge-good' if integrations.mqtt.connected else 'badge-muted' }}">MQTT {{ '在线' if integrations.mqtt.connected else '待连接' }}</span>
+      </div>
+    </div>
+  </header>
+
+  <section class="metrics">
+    <article class="metric card">
+      <p>可通过 API 调用</p>
+      <strong>{{ all_actions | selectattr("allow_api") | list | length }}</strong>
+      <span>仅开放白名单动作</span>
+    </article>
+    <article class="metric card">
+      <p>收藏动作</p>
+      <strong>{{ favorite_actions|length }}</strong>
+      <span>手机页优先显示收藏</span>
+    </article>
+    <article class="metric card">
+      <p>最近动作</p>
+      <strong>{{ recent_actions|length }}</strong>
+      <span>保留最近使用记录</span>
+    </article>
+    <article class="metric card">
+      <p>最近请求</p>
+      <strong>{{ request_history|length }}</strong>
+      <span>显示最近 20 条</span>
+    </article>
+  </section>
+
+  <div class="layout">
+    <main class="main-column">
+      <section class="panel" id="actions">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">动作列表</p>
+            <h2>启动项管理</h2>
+          </div>
+          <div class="panel-actions">
+            <button class="button button-primary button-compact" type="button" data-open-action-modal="new">新建动作</button>
+            <button class="button button-secondary button-compact" type="button" id="bulk-export-button">批量导出</button>
+            <button class="button button-danger button-compact" type="button" id="bulk-delete-button">批量删除</button>
+          </div>
+        </div>
+
+        <form class="toolbar" method="get">
+          <input class="input" name="keyword" value="{{ keyword }}" placeholder="搜索名称 / Topic" />
+          <select class="input" name="category">
+            <option value="">全部分类</option>
+            {% for item in categories %}
+              <option value="{{ item }}" {% if item == selected_category %}selected{% endif %}>{{ item }}</option>
+            {% endfor %}
+          </select>
+          <button class="button button-secondary button-compact" type="submit">筛选</button>
+          <a class="button button-ghost button-compact" href="{{ url_for('web.dashboard') }}">重置</a>
+          <label class="checkbox-line details-filter">
+            <input type="checkbox" id="show-action-details" />
+            <span>显示详情</span>
+          </label>
+        </form>
+
+        <form id="bulk-delete-form" method="post" action="{{ url_for('web.bulk_delete') }}"></form>
+        <form id="bulk-export-form" method="post" action="{{ url_for('web.bulk_export') }}"></form>
+
+        {% if actions %}
+        <div class="list-toolbar">
+          <label class="checkbox-line">
+            <input type="checkbox" id="select-all-actions" />
+            <span>全选当前列表</span>
+          </label>
+          <span class="helper-text">卡片默认只展示名称、类型和执行按钮；悬停或勾选“显示详情”后展开命令与描述。</span>
+        </div>
+        <div class="card-grid">
+          {% for action in actions %}
+          <article class="action-card card">
+            <div class="action-top">
+              <label class="checkbox-box">
+                <input type="checkbox" class="action-selector" value="{{ action.name }}" />
+              </label>
+              <div class="action-meta">
+                <div class="title-row">
+                  <h3>{{ action.name }}</h3>
+                  <span class="badge badge-type">{{ action.type }}</span>
+                  {% if action.favorite %}<span class="badge badge-good">收藏</span>{% endif %}
+                  {% if action.allow_api %}<span class="badge badge-accent">API</span>{% endif %}
+                  {% if not action.enabled %}<span class="badge badge-danger">停用</span>{% endif %}
+                </div>
+              </div>
+            </div>
+            <div class="action-details">
+              <div class="detail-grid">
+                <div>
+                  <span class="detail-label">分类</span>
+                  <strong>{{ action.category }}</strong>
+                </div>
+                <div>
+                  <span class="detail-label">标签</span>
+                  <strong>{{ action.tags_text or "无" }}</strong>
+                </div>
+                <div>
+                  <span class="detail-label">Topic</span>
+                  <strong>{{ action.bafy_topic or "无" }}</strong>
+                </div>
+                <div>
+                  <span class="detail-label">卡号</span>
+                  <strong>{{ action.card_id_text or "无" }}</strong>
+                </div>
+              </div>
+              <div class="scroll-wrap">
+                <pre class="command-preview">{{ action.cmd or "系统内建动作" }}</pre>
+              </div>
+              <p class="muted action-description">{{ action.description or "未填写描述" }}</p>
+              <div class="detail-grid compact">
+                <div>
+                  <span class="detail-label">最近执行</span>
+                  <strong>{{ action.last_run_at or "暂无" }}</strong>
+                </div>
+                <div>
+                  <span class="detail-label">执行次数</span>
+                  <strong>{{ action.run_count }}</strong>
+                </div>
+              </div>
+            </div>
+            <div class="card-actions">
+              <form method="post" action="{{ url_for('web.run_action', name=action.name) }}" class="inline-form">
+                {% if action.type == "brightness" %}
+                  <input class="input input-small" type="number" name="brightness_value" min="0" max="100" value="50" />
+                {% endif %}
+                <button class="button button-primary button-compact" type="submit" data-loading-text="执行中...">执行</button>
+              </form>
+              <button class="button button-secondary button-compact" type="button" data-open-action-modal="edit" data-action-name="{{ action.name }}">编辑</button>
+              <form method="post" action="{{ url_for('web.delete_action', name=action.name) }}" onsubmit="return confirm('确认删除 {{ action.name }} 吗？');">
+                <button class="button button-danger button-compact" type="submit" data-loading-text="删除中...">删除</button>
+              </form>
+            </div>
+          </article>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state card">
+          <h3>当前没有匹配的动作</h3>
+          <p>可以新建动作，或调整搜索和分类筛选条件。</p>
+          <button class="button button-primary button-compact" type="button" data-open-action-modal="new">立即新建</button>
+        </div>
+        {% endif %}
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">设备状态</p>
+            <h2>ADB / MQTT / 读卡器</h2>
+          </div>
+        </div>
+        <div class="card-grid status-grid">
+          <article class="card">
+            <div class="card-top-row">
+              <h3>ADB 管理</h3>
+              <button class="button button-secondary button-compact" type="button" id="adb-pair-toggle">连接设备 / 配对设备</button>
+            </div>
+            <p class="muted">当前状态：{{ "已连接" if adb_status.connected else "未连接" }}</p>
+            <p class="muted">设备列表：{{ adb_status.devices|join(", ") if adb_status.devices else "无" }}</p>
+            <form method="post" action="{{ url_for('web.adb_connect') }}" class="stack-form">
+              <label class="stack-field">
+                <span>设备 IP</span>
+                <input class="input" name="ip" value="{{ settings.adb_ip }}" placeholder="例如 192.168.1.8:5555" />
+              </label>
+              <div class="row-actions">
+                <button class="button button-primary button-compact" type="submit" data-loading-text="连接中...">连接 ADB</button>
+                <button class="button button-secondary button-compact" type="submit" formaction="{{ url_for('web.adb_disconnect') }}" data-loading-text="断开中...">断开 ADB</button>
+              </div>
+            </form>
+            <form method="post" action="{{ url_for('web.adb_pair') }}" class="stack-form adb-pair-form" id="adb-pair-form" hidden>
+              <label class="stack-field">
+                <span>设备 IP</span>
+                <input class="input" name="pair_ip" value="{{ settings.adb_ip }}" placeholder="例如 192.168.1.10" required />
+              </label>
+              <label class="stack-field">
+                <span>配对端口</span>
+                <input class="input" name="pair_port" type="number" min="1" max="65535" placeholder="例如 37121" required />
+              </label>
+              <label class="stack-field">
+                <span>配对码</span>
+                <input class="input" name="pair_code" inputmode="numeric" placeholder="例如 123456" required />
+              </label>
+              <label class="stack-field">
+                <span>调试端口</span>
+                <input class="input" name="debug_port" type="number" min="1" max="65535" placeholder="默认 5555，可不填" />
+              </label>
+              <button class="button button-primary button-compact" type="submit" data-loading-text="配对中...">提交配对</button>
+            </form>
+          </article>
+          <article class="card">
+            <h3>MQTT / 巴法云</h3>
+            <p class="muted">UID：{{ settings.bafy_uid or "未设置" }}</p>
+            <p class="muted">连接状态：{{ "在线" if integrations.mqtt.connected else "待连接" }}</p>
+            <p class="muted">最近错误：{{ integrations.mqtt.last_error or "无" }}</p>
+          </article>
+          <article class="card">
+            <h3>NFC / 串口读卡</h3>
+            <p class="muted">串口：{{ settings.serial_port }}</p>
+            <p class="muted">启用：{{ "是" if settings.enable_card_reader else "否" }}</p>
+            <p class="muted">最近卡号：{{ integrations.card_reader.last_card_id or "暂无" }}</p>
+          </article>
+          <article class="card">
+            <h3>执行队列</h3>
+            {% if task_history %}
+              <ul class="history-list">
+                {% for task in task_history[:5] %}
+                  <li>
+                    <strong>{{ task.action_name }}</strong>
+                    <span>{{ task.status }}</span>
+                    <small>{{ task.message or "等待结果" }}</small>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="muted">暂无后台执行记录。</p>
+            {% endif %}
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">iOS 快捷指令接口说明</p>
+            <h2>HTTP API / Webhook 接入</h2>
+          </div>
+          <div class="panel-actions">
+            <a class="button button-secondary button-compact" href="{{ mobile_url }}" target="_blank" rel="noreferrer">打开移动按钮页</a>
+          </div>
+        </div>
+        <div class="shortcut-grid">
+          <article class="card">
+            <h3>基础信息</h3>
+            <div class="code-line">
+              <span>API Base</span>
+              <code id="api-base">{{ api_base }}</code>
+              <button class="copy-button button-compact" type="button" data-copy-target="api-base">复制</button>
+            </div>
+            <div class="code-line">
+              <span>Token Header</span>
+              <code id="api-token">X-SmartLink-Token: {{ settings.api_token }}</code>
+              <button class="copy-button button-compact" type="button" data-copy-target="api-token">复制</button>
+            </div>
+            <div class="code-line">
+              <span>手机页</span>
+              <code id="mobile-url">{{ mobile_url }}</code>
+              <button class="copy-button button-compact" type="button" data-copy-target="mobile-url">复制</button>
+            </div>
+            <img class="qr-image" src="{{ qr_data_uri }}" alt="移动控制页二维码" />
+          </article>
+          <article class="card">
+            <h3>快捷指令示例</h3>
+            <div class="example-block">
+              <p>获取动作列表</p>
+              <code id="example-actions">GET {{ api_base }}/actions</code>
+              <button class="copy-button button-compact" type="button" data-copy-target="example-actions">复制</button>
+            </div>
+            <div class="example-block">
+              <p>执行动作</p>
+              <code id="example-run">POST {{ api_base }}/run/关机</code>
+              <button class="copy-button button-compact" type="button" data-copy-target="example-run">复制</button>
+            </div>
+            <div class="example-block">
+              <p>调节亮度</p>
+              <code id="example-brightness">POST {{ api_base }}/system/brightness {"value":50}</code>
+              <button class="copy-button button-compact" type="button" data-copy-target="example-brightness">复制</button>
+            </div>
+            <div class="example-block">
+              <p>查看日志</p>
+              <code id="example-logs">GET {{ api_base }}/logs</code>
+              <button class="copy-button button-compact" type="button" data-copy-target="example-logs">复制</button>
+            </div>
+          </article>
+          <article class="card">
+            <h3>SSH 可选增强</h3>
+            <p class="muted">HTTP API 是主路径，SSH 只是高级备用方案。</p>
+            <div class="scroll-wrap">
+              <pre class="command-preview">{{ ssh_command or "未填写 SSH 主机和用户名，暂不生成命令模板。" }}</pre>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">系统日志查看</p>
+            <h2>运行日志与最近请求</h2>
+          </div>
+          <div class="panel-actions">
+            <a class="button button-secondary button-compact" href="{{ url_for('web.logs_text') }}" target="_blank" rel="noreferrer">打开完整日志</a>
+          </div>
+        </div>
+        <div class="log-layout">
+          <article class="card">
+            <h3>最近日志（50 条）</h3>
+            <div class="scroll-wrap">
+              <pre class="log-box">{{ recent_logs|join("\n") if recent_logs else "暂无日志" }}</pre>
+            </div>
+          </article>
+          <article class="card">
+            <h3>最近请求 / Webhook 历史</h3>
+            {% if request_history %}
+            <div class="request-table scroll-wrap">
+              {% for item in request_history %}
+              <div class="request-row">
+                <strong>{{ item.method }}</strong>
+                <code>{{ item.path }}</code>
+                <span>{{ item.status }}</span>
+                <small>{{ item.ip }} / {{ item.duration_ms }} ms</small>
+              </div>
+              {% endfor %}
+            </div>
+            {% else %}
+              <p class="muted">暂无请求记录。</p>
+            {% endif %}
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <aside class="side-column">
+      <section class="panel settings-shell">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">全局设置</p>
+            <h2>服务 / 安全 / 启动</h2>
+          </div>
+        </div>
+        <form class="stack-form" method="post" action="{{ url_for('web.save_settings') }}">
+          <div class="settings-card">
+            <h3>服务</h3>
+            <div class="form-grid">
+              <label class="stack-field"><span>监听地址</span><input class="input" name="listen_host" value="{{ settings.listen_host }}" /></label>
+              <label class="stack-field"><span>端口</span><input class="input" name="port" type="number" min="1" max="65535" value="{{ settings.port }}" /></label>
+              <label class="stack-field"><span>API Token</span><input class="input" name="api_token" type="password" value="{{ settings.api_token }}" required /></label>
+              <label class="stack-field"><span>请求超时（秒）</span><input class="input" name="request_timeout" type="number" min="3" max="120" value="{{ settings.request_timeout }}" /></label>
+              <label class="stack-field"><span>ADB 设备地址</span><input class="input" name="adb_ip" value="{{ settings.adb_ip }}" /></label>
+              <label class="stack-field"><span>串口号</span><input class="input" name="serial_port" value="{{ settings.serial_port }}" /></label>
+              <label class="stack-field"><span>巴法云 UID</span><input class="input" name="bafy_uid" value="{{ settings.bafy_uid }}" /></label>
+              <label class="stack-field"><span>设备密码</span><input class="input" type="password" name="device_password" value="{{ settings.device_password }}" placeholder="仅 Android 解锁时使用" /></label>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <h3>安全</h3>
+            <div class="form-grid">
+              <label class="stack-field"><span>允许网段</span><input class="input" name="allowed_networks" value="{{ settings.allowed_networks|join(', ') }}" placeholder="192.168.0.0/16,10.0.0.0/8" /></label>
+              <label class="stack-field"><span>白名单 IP</span><input class="input" name="allowed_ips" value="{{ settings.allowed_ips|join(', ') }}" placeholder="192.168.1.23,192.168.1.88" /></label>
+              <label class="stack-field"><span>SSH 主机</span><input class="input" name="ssh_host" value="{{ settings.ssh_host }}" placeholder="可选" /></label>
+              <label class="stack-field"><span>SSH 用户</span><input class="input" name="ssh_user" value="{{ settings.ssh_user }}" placeholder="可选" /></label>
+              <label class="stack-field"><span>SSH 端口</span><input class="input" name="ssh_port" type="number" min="1" max="65535" value="{{ settings.ssh_port }}" /></label>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <h3>启动与行为</h3>
+            <div class="toggle-grid">
+              <label class="checkbox-line"><input type="checkbox" name="enable_card_reader" {% if settings.enable_card_reader %}checked{% endif %} />启用串口读卡</label>
+              <label class="checkbox-line"><input type="checkbox" name="enable_adb_connect" {% if settings.enable_adb_connect %}checked{% endif %} />启动时自动连接 ADB</label>
+              <label class="checkbox-line"><input type="checkbox" name="music_screen_on" {% if settings.music_screen_on %}checked{% endif %} />音乐动作前亮屏</label>
+              <label class="checkbox-line"><input type="checkbox" name="adb_screen_on" {% if settings.adb_screen_on %}checked{% endif %} />ADB 动作前亮屏</label>
+              <label class="checkbox-line"><input type="checkbox" name="unlock_after_screen_on" {% if settings.unlock_after_screen_on %}checked{% endif %} />亮屏后尝试解锁</label>
+              <label class="checkbox-line"><input type="checkbox" name="tray_enabled" {% if settings.tray_enabled %}checked{% endif %} />启用系统托盘</label>
+              <label class="checkbox-line"><input type="checkbox" name="auto_open_browser" {% if settings.auto_open_browser %}checked{% endif %} />启动后自动打开浏览器</label>
+              <label class="checkbox-line"><input type="checkbox" name="startup_enabled" {% if settings.startup_enabled %}checked{% endif %} />Windows 开机自启</label>
+            </div>
+          </div>
+
+          <div class="settings-actions">
+            <button class="button button-primary button-compact" type="submit" data-loading-text="保存中...">保存全局配置</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel settings-shell">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">JSON 管理</p>
+            <h2>导入 / 预览</h2>
+          </div>
+        </div>
+        <form class="stack-form" method="post" action="{{ url_for('web.import_config') }}" enctype="multipart/form-data">
+          <div class="settings-card">
+            <label class="stack-field">
+              <span>配置文件</span>
+              <input class="input" type="file" name="config_file" accept=".json,application/json" required />
+            </label>
+            <label class="checkbox-line"><input type="checkbox" name="merge_import" checked />保留现有动作并合并导入</label>
+            <label class="stack-field">
+              <span>JSON 预览</span>
+              <textarea class="input textarea json-preview" readonly>{{ config_preview }}</textarea>
+            </label>
+          </div>
+          <div class="settings-actions">
+            <button class="button button-secondary button-compact" type="submit" data-loading-text="导入中...">导入配置</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">最近使用</p>
+            <h2>快速回放</h2>
+          </div>
+        </div>
+        {% if recent_actions %}
+          <div class="quick-list">
+            {% for action in recent_actions %}
+            <form method="post" action="{{ url_for('web.run_action', name=action.name) }}" class="quick-item">
+              <div>
+                <strong>{{ action.name }}</strong>
+                <small>{{ action.last_run_at }}</small>
+              </div>
+              <button class="button button-secondary button-compact" type="submit" data-loading-text="执行中...">再执行</button>
+            </form>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted">最近还没有执行记录。</p>
+        {% endif %}
+      </section>
+    </aside>
+  </div>
+</div>
+
+<div class="modal-shell" id="action-modal-shell" hidden>
+  <div class="modal-backdrop" data-close-action-modal></div>
+  <div class="modal-card">
+    <div class="panel-header">
+      <div>
+        <p class="eyebrow">动作编辑</p>
+        <h2 id="action-modal-title">新建动作</h2>
+      </div>
+      <button class="button button-ghost button-compact" type="button" data-close-action-modal>关闭</button>
+    </div>
+    <form class="stack-form" id="action-form" method="post" action="{{ url_for('web.save_action') }}">
+      <input type="hidden" name="old_name" id="old_name" />
+      <input type="hidden" name="form_submitted" value="1" />
+      <div class="form-grid">
+        <label class="stack-field"><span>名称</span><input class="input" name="name" id="name" required placeholder="例如：打开 Photoshop" /></label>
+        <label class="stack-field">
+          <span>类型</span>
+          <select class="input" name="type" id="type">
+            <option value="exe">exe</option>
+            <option value="adb">adb</option>
+            <option value="brightness">brightness</option>
+          </select>
+        </label>
+        <label class="stack-field"><span>分类</span><input class="input" name="category" id="category" placeholder="例如：办公、系统、影音" /></label>
+        <label class="stack-field"><span>标签</span><input class="input" name="tags" id="tags" placeholder="用英文逗号分隔" /></label>
+        <label class="stack-field"><span>音乐 URI Scheme</span><input class="input" name="uri_scheme" id="uri_scheme" placeholder="保留兼容，不建议新建 music" /></label>
+        <label class="stack-field"><span>巴法云 Topic</span><input class="input" name="bafy_topic" id="bafy_topic" placeholder="例如 home001" /></label>
+        <label class="stack-field"><span>卡号绑定</span><input class="input" name="card_ids" id="card_ids" placeholder="多个卡号使用英文逗号分隔" /></label>
+        <label class="stack-field"><span>描述</span><input class="input" name="description" id="description" placeholder="说明动作用途" /></label>
+      </div>
+      <label class="stack-field">
+        <span>命令 / JSON / 模板</span>
+        <textarea class="input textarea" name="cmd" id="cmd" rows="5" placeholder="exe: 可执行命令&#10;adb: 每行一个 adb 开头命令&#10;brightness: 命令中使用 XXX 占位符"></textarea>
+      </label>
+      <div class="toggle-grid">
+        <label class="checkbox-line"><input type="checkbox" name="favorite" id="favorite" />收藏动作</label>
+        <label class="checkbox-line"><input type="checkbox" name="allow_api" id="allow_api" checked />允许 API / iPhone 调用</label>
+        <label class="checkbox-line"><input type="checkbox" name="enabled" id="enabled" checked />启用动作</label>
+      </div>
+      <div class="row-actions">
+        <button class="button button-primary button-compact" type="submit" data-loading-text="保存中...">保存动作</button>
+        <button class="button button-secondary button-compact" type="submit" name="run_after_save" value="1" data-loading-text="测试中...">保存并测试</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script id="action-data" type="application/json">{{ action_json|tojson }}</script>
+{% endblock %}

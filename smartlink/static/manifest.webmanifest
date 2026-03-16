@@ -1,0 +1,9 @@
+{
+  "name": "SmartLink 控制台",
+  "short_name": "SmartLink",
+  "start_url": "/mobile",
+  "display": "standalone",
+  "background_color": "#eef3fb",
+  "theme_color": "#0d4fd8",
+  "description": "用于局域网控制电脑、ADB 设备和 iPhone 快捷指令接入的 SmartLink 控制台"
+}
