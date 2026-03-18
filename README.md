@@ -1,6 +1,6 @@
 # SmartLink
 
-SmartLink 是一个面向 Windows 主机的局域网控制工具，保留了原项目的 ADB、MQTT、串口读卡和托盘能力，并补齐了更可维护的 Flask 控制台、iPhone 快捷指令 HTTP API、安全鉴权、日志、配置导入导出和移动端按钮页，通过巴法云可以接入小爱同学，小度音箱，Google assistent，实现控制电脑或者外加adb实现控制安卓平板功能
+SmartLink 是一个面向 Windows 主机的局域网控制工具，保留了原项目的 ADB、MQTT、串口读卡和托盘能力，并补齐了更可维护的 Flask 控制台、iPhone 快捷指令 HTTP API、安全鉴权、日志、配置导入导出和移动端按钮页。
 
 ## 主要能力
 

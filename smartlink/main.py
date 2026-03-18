@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import ctypes
 import os
 import threading
 import time
@@ -22,24 +21,22 @@ def resolve_access_host(listen_host: str) -> str:
     return normalized
 
 
-def show_error_dialog(title: str, message: str) -> None:
-    """Windows 无控制台模式下显示关键错误。"""
-    if os.name != "nt":
-        return
-    try:
-        ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)
-    except Exception:
-        return
+def start_adb_initializer(state, settings) -> threading.Thread:
+    """后台初始化 ADB，避免阻塞 Web 启动。"""
 
+    def _worker() -> None:
+        time.sleep(2)
+        state.logger.info("[SmartLink] adb init start")
+        try:
+            result = state.adb_service.connect_if_needed(settings)
+            outcome = "done" if result.success else "failed"
+            state.logger.info("[SmartLink] adb init %s message=%s", outcome, result.message)
+        except Exception as exc:  # pragma: no cover - defensive path
+            state.logger.error("[SmartLink] adb init failed error=%s", exc, exc_info=True)
 
-def show_info_dialog(title: str, message: str) -> None:
-    """Windows 无控制台模式下显示启动提示。"""
-    if os.name != "nt":
-        return
-    try:
-        ctypes.windll.user32.MessageBoxW(None, message, title, 0x40)
-    except Exception:
-        return
+    thread = threading.Thread(target=_worker, daemon=True, name="smartlink-adb-init")
+    thread.start()
+    return thread
 
 
 class ServerThread(threading.Thread):
@@ -72,7 +69,6 @@ def main() -> int:
     app = create_app(config_path=args.config or None)
     state = app.extensions["smartlink"]
     settings = state.config_manager.get_settings()
-    state.adb_service.connect_if_needed(settings)
     state.integration_manager.start()
 
     host = settings.listen_host
@@ -80,12 +76,6 @@ def main() -> int:
     access_host = resolve_access_host(host)
     dashboard_url = f"http://{access_host}:{port}/"
     mobile_url = f"http://{access_host}:{port}/mobile"
-    startup_message = (
-        "SmartLink 已启动。\n\n"
-        f"控制台: {dashboard_url}\n"
-        f"手机页: {mobile_url}\n\n"
-        "当前使用了 --no-browser，程序不会自动打开浏览器。"
-    )
 
     def maybe_open_browser() -> None:
         if not args.no_browser and settings.auto_open_browser:
@@ -93,16 +83,21 @@ def main() -> int:
             webbrowser.open(dashboard_url)
 
     threading.Thread(target=maybe_open_browser, daemon=True).start()
+    state.logger.info("[SmartLink] starting...")
     state.logger.info("startup host=%s port=%s dashboard=%s", host, port, dashboard_url)
 
     if settings.tray_enabled and not args.disable_tray and tray_available():
-        server = ServerThread(app, host, port)
-        server.start()
-        if args.no_browser and settings.show_windows_info_dialog:
-            threading.Thread(
-                target=lambda: (time.sleep(1.0), show_info_dialog("SmartLink", startup_message)),
-                daemon=True,
-            ).start()
+        try:
+            server = ServerThread(app, host, port)
+            server.start()
+        except OSError as exc:
+            state.logger.error("service startup failed: %s", exc, exc_info=True)
+            state.integration_manager.stop()
+            state.action_service.shutdown()
+            return 1
+
+        state.logger.info("[SmartLink] web server ready")
+        start_adb_initializer(state, settings)
 
         def _shutdown() -> None:
             state.integration_manager.stop()
@@ -110,25 +105,26 @@ def main() -> int:
             server.shutdown()
             os._exit(0)
 
-        TrayManager(dashboard_url=dashboard_url, mobile_url=mobile_url, on_exit=_shutdown).run()
-        return 0
+        try:
+            TrayManager(dashboard_url=dashboard_url, mobile_url=mobile_url, on_exit=_shutdown).run()
+            return 0
+        except Exception as exc:  # pragma: no cover - tray env dependent
+            state.logger.error("tray runtime error: %s", exc, exc_info=True)
+            server.shutdown()
+            state.integration_manager.stop()
+            state.action_service.shutdown()
+            return 1
 
+    start_adb_initializer(state, settings)
+    state.logger.info("[SmartLink] web server ready")
     try:
-        if args.no_browser and settings.show_windows_info_dialog:
-            threading.Thread(
-                target=lambda: (time.sleep(1.0), show_info_dialog("SmartLink", startup_message)),
-                daemon=True,
-            ).start()
         app.run(host=host, port=port, threaded=True)
     except OSError as exc:
-        state.logger.exception("service startup failed: %s", exc)
-        show_error_dialog("SmartLink 启动失败", f"服务启动失败：{exc}")
-        print(f"服务启动失败: {exc}")
+        state.logger.error("service startup failed: %s", exc, exc_info=True)
         return 1
     except Exception as exc:
-        state.logger.exception("service runtime error: %s", exc)
-        show_error_dialog("SmartLink 运行异常", f"程序运行异常：{exc}")
-        raise
+        state.logger.error("service runtime error: %s", exc, exc_info=True)
+        return 1
     finally:
         state.integration_manager.stop()
         state.action_service.shutdown()
