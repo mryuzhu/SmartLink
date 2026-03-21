@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import shlex
 import shutil
@@ -46,6 +47,17 @@ class ADBService:
     def build_pair_target(self, ip: str, port: str | int) -> str:
         return f"{ip.strip()}:{str(port).strip()}"
 
+    def _windows_process_kwargs(self) -> dict[str, Any]:
+        if os.name != "nt":
+            return {}
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        return {
+            "creationflags": subprocess.CREATE_NO_WINDOW,
+            "startupinfo": startupinfo,
+        }
+
     def _coerce_result(self, result: Any) -> ExecutionResult:
         if isinstance(result, ExecutionResult):
             return result
@@ -75,6 +87,7 @@ class ADBService:
                 errors="ignore",
                 timeout=timeout,
                 check=False,
+                **self._windows_process_kwargs(),
             )
         except subprocess.TimeoutExpired:
             command = " ".join(args)

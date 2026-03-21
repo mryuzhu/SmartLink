@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import shlex
 import subprocess
 import urllib.parse
@@ -34,12 +35,23 @@ class CommandLauncher:
     def launch(self, command_line: str) -> ExecutionResult:
         try:
             args = self._parse(command_line)
-            subprocess.Popen(args, shell=False)
+            subprocess.Popen(args, shell=False, **self._windows_process_kwargs())
         except (OSError, ValueError) as exc:
             return ExecutionResult(
                 False, f"命令启动失败: {exc}", {"command": command_line}, "command_launch_failed"
             )
         return ExecutionResult(True, "命令已启动。", {"command": command_line})
+
+    def _windows_process_kwargs(self) -> dict[str, Any]:
+        if os.name != "nt":
+            return {}
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        return {
+            "creationflags": subprocess.CREATE_NO_WINDOW,
+            "startupinfo": startupinfo,
+        }
 
     def _parse(self, command_line: str) -> list[str]:
         line = command_line.strip()
